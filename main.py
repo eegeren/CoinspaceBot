@@ -1,3 +1,5 @@
+# main.py
+
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 import asyncio
@@ -5,7 +7,6 @@ from bot import run_bot
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 FastAPI lifespan başlatılıyor...")
     asyncio.create_task(run_bot())
     yield
 
