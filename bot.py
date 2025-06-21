@@ -273,7 +273,7 @@ async def check_and_send_news(app):
 
 async def run_bot():
     await load_symbol_map()
-    app = ApplicationBuilder().token(TOKEN).build()
+    telegram_app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -296,11 +296,11 @@ async def run_bot():
     for cmd in ["ai_btc", "ai_eth", "ai_sol"]:
         app.add_handler(CommandHandler(cmd, ai_comment))
 
-    await app.initialize()
-    await app.start()
-    asyncio.create_task(check_alerts(app))
+        asyncio.create_task(check_alerts(telegram_app))
+        asyncio.create_task(check_and_send_news(telegram_app))
+
     print("Telegram bot started")
-    await app.updater.start_polling()
+    await app.run_polling()
 
 import openai
 
