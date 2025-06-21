@@ -297,6 +297,9 @@ from your_module import (
 )
 from config import TOKEN
 
+
+
+
 async def run_bot():
     print("🚀 run_bot() başlatılıyor...")
 
