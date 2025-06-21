@@ -274,12 +274,13 @@ async def check_and_send_news(app):
 async def run_bot():
     print("🚀 run_bot() başlatılıyor...")
 
-    app = ApplicationBuilder().token(TOKEN).build()  # ← BUNU EN ÜSTE KOY
+    app = ApplicationBuilder().token(TOKEN).build()
     print("✅ Telegram bot uygulaması oluşturuldu.")
 
     await load_symbol_map()
     print("✅ Coin sembolleri yüklendi.")
 
+    # Komutları ekle
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("price", price))
@@ -292,26 +293,24 @@ async def run_bot():
     app.add_handler(CommandHandler("graph", graph))
     app.add_handler(CommandHandler("performance", performance))
     app.add_handler(CommandHandler("news", news_command))
-    asyncio.create_task(check_and_send_news(app))
     app.add_handler(CommandHandler("readmore", readmore))
     app.add_handler(CommandHandler("backtest", backtest))
     app.add_handler(CallbackQueryHandler(feedback_handler))
 
+    for cmd in ["ai_btc", "ai_eth", "ai_sol"]:
+        app.add_handler(CommandHandler(cmd, ai_comment))
+
+    # Background görevleri başlat
+    asyncio.create_task(check_alerts(app))
+    asyncio.create_task(check_and_send_news(app))
+    print("🔄 Arka plan görevleri başlatıldı.")
+
+    # Uygulamayı başlat
     await app.initialize()
     await app.start()
     print("✅ Bot başlatıldı.")
 
-
-    for cmd in ["ai_btc", "ai_eth", "ai_sol"]:
-        app.add_handler(CommandHandler(cmd, ai_comment))
-
-        asyncio.create_task(check_alerts(app))
-        asyncio.create_task(check_and_send_news(app))
-        print("🔄 Arka plan görevleri başlatıldı.")
-
-
     print("Telegram bot started")
-    await app.run_polling()
 
 import openai
 
