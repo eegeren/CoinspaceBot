@@ -271,17 +271,12 @@ async def check_and_send_news(app):
         await asyncio.sleep(7200)  # 2 saatte bir tekrar
 
 
-import asyncio
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
-
 async def run_bot():
     print("🚀 run_bot() başlatılıyor...")
 
-    # Bot uygulamasını oluştur
-    app = ApplicationBuilder().token(TOKEN).build()
+    application = ApplicationBuilder().token(TOKEN).build()
     print("✅ Telegram bot uygulaması oluşturuldu.")
 
-    # Coin sembollerini yükle
     await load_symbol_map()
     print("✅ Coin sembolleri yüklendi.")
 
@@ -302,23 +297,23 @@ async def run_bot():
     app.add_handler(CommandHandler("backtest", backtest))
     app.add_handler(CallbackQueryHandler(feedback_handler))
 
-    # AI komutları
-    for cmd in ["ai_btc", "ai_eth", "ai_sol"]:
-        app.add_handler(CommandHandler(cmd, ai_comment))
 
-    # Arka plan görevlerini başlat
-    asyncio.create_task(check_alerts(app))
-    asyncio.create_task(check_and_send_news(app))
-    print("🔄 Arka plan görevleri başlatıldı.")
+    # Arka plan görevleri
+    asyncio.create_task(check_alerts(application))
+    asyncio.create_task(check_and_send_news(application))
 
-    # Botu başlat ama run_polling() kullanmadan
-    await app.initialize()
-    await app.start()
+    await application.initialize()
+    await application.start()
     print("✅ Bot başlatıldı.")
     print("Telegram bot started")
 
-    # FastAPI ayakta kaldığı sürece bot çalışmaya devam eder
+    # Artık run_polling() değil:
+    await application.updater.start_polling()
+    await application.updater.wait()
 
+
+    
+   
 
 import openai
 
