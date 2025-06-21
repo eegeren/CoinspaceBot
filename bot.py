@@ -284,6 +284,19 @@ from your_module import (
 )
 from config import TOKEN  # veya doğrudan os.getenv("TOKEN")
 
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler
+)
+import asyncio
+from your_module import (
+    start, help_command, price, portfolio, add, remove,
+    update_command, clear, setalert, graph, performance,
+    news_command, readmore, backtest, feedback_handler,
+    ai_comment, check_alerts, check_and_send_news,
+    load_symbol_map
+)
+from config import TOKEN
+
 async def run_bot():
     print("🚀 run_bot() başlatılıyor...")
 
@@ -322,9 +335,8 @@ async def run_bot():
     print("✅ Bot başlatıldı.")
     print("Telegram bot started")
 
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
+    await application.run_polling()  # ✅ doğru olan budur
+
 
 
 import openai
