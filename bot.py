@@ -271,6 +271,19 @@ async def check_and_send_news(app):
         await asyncio.sleep(7200)  # 2 saatte bir tekrar
 
 
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler
+)
+import asyncio
+from your_module import (
+    start, help_command, price, portfolio, add, remove,
+    update_command, clear, setalert, graph, performance,
+    news_command, readmore, backtest, feedback_handler,
+    ai_comment, check_alerts, check_and_send_news,
+    load_symbol_map
+)
+from config import TOKEN  # veya doğrudan os.getenv("TOKEN")
+
 async def run_bot():
     print("🚀 run_bot() başlatılıyor...")
 
@@ -280,40 +293,39 @@ async def run_bot():
     await load_symbol_map()
     print("✅ Coin sembolleri yüklendi.")
 
-    # Komutları tanımla
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("price", price))
-    app.add_handler(CommandHandler("portfolio", portfolio))
-    app.add_handler(CommandHandler("add", add))
-    app.add_handler(CommandHandler("remove", remove))
-    app.add_handler(CommandHandler("update", update_command))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("setalert", setalert))
-    app.add_handler(CommandHandler("graph", graph))
-    app.add_handler(CommandHandler("performance", performance))
-    app.add_handler(CommandHandler("news", news_command))
-    app.add_handler(CommandHandler("readmore", readmore))
-    app.add_handler(CommandHandler("backtest", backtest))
-    app.add_handler(CallbackQueryHandler(feedback_handler))
+    # Komutlar
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("price", price))
+    application.add_handler(CommandHandler("portfolio", portfolio))
+    application.add_handler(CommandHandler("add", add))
+    application.add_handler(CommandHandler("remove", remove))
+    application.add_handler(CommandHandler("update", update_command))
+    application.add_handler(CommandHandler("clear", clear))
+    application.add_handler(CommandHandler("setalert", setalert))
+    application.add_handler(CommandHandler("graph", graph))
+    application.add_handler(CommandHandler("performance", performance))
+    application.add_handler(CommandHandler("news", news_command))
+    application.add_handler(CommandHandler("readmore", readmore))
+    application.add_handler(CommandHandler("backtest", backtest))
+    application.add_handler(CallbackQueryHandler(feedback_handler))
 
+    # AI komutları
+    for cmd in ["ai_btc", "ai_eth", "ai_sol"]:
+        application.add_handler(CommandHandler(cmd, ai_comment))
 
     # Arka plan görevleri
     asyncio.create_task(check_alerts(application))
     asyncio.create_task(check_and_send_news(application))
+    print("🔄 Arka plan görevleri başlatıldı.")
 
-    await application.initialize()
-    await application.start()
     print("✅ Bot başlatıldı.")
     print("Telegram bot started")
 
-    # Artık run_polling() değil:
+    await application.initialize()
+    await application.start()
     await application.updater.start_polling()
-    await application.updater.wait()
 
-
-    
-   
 
 import openai
 
