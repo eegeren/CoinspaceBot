@@ -1,12 +1,14 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 import asyncio
 from bot import run_bot
 
-app = FastAPI() 
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     asyncio.create_task(run_bot())
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def read_root():
