@@ -1,0 +1,11 @@
+python-telegram-bot==20.8
+python-dotenv
+fastapi
+uvicorn
+aiohttp
+tinydb
+matplotlib
+yfinance
+# temp trigger
+openai>=1.10.0
+ta

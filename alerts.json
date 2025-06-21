@@ -1,0 +1,32 @@
+[
+  {
+    "user_id": 111111111,
+    "coin_id": "bitcoin",
+    "target": 50000
+  },
+  {
+    "user_id": 1916984442,
+    "coin_id": "BTC",
+    "target": 103735.0
+  },
+  {
+    "user_id": 1916984442,
+    "coin_id": "BTC",
+    "target": 103865.0
+  },
+  {
+    "user_id": 1916984442,
+    "coin_id": "BTC",
+    "target": 105.52
+  },
+  {
+    "user_id": 1916984442,
+    "coin_id": "BITCOIN",
+    "target": 105.46
+  },
+  {
+    "user_id": 1916984442,
+    "coin_id": "BITCOIN",
+    "target": 105.465
+  }
+]
