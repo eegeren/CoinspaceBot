@@ -6,6 +6,5 @@ aiohttp
 tinydb
 matplotlib
 yfinance
-# temp trigger
 openai>=1.10.0
 ta
