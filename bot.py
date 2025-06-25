@@ -424,24 +424,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "*📚 Coinspace Commands*\n\n"
-        "💰 [`/add BTC 0.5 30000`](https://t.me/ccoinspace_bot) \\- Add a coin to portfolio\n"
-        "📊 [`/portfolio`](https://t.me/ccoinspace_bot) \\- Show current portfolio\n"
-        "🔁 [`/update BTC 1.0`](https://t.me/ccoinspace_bot) \\- Update coin amount\n"
-        "🗑 [`/remove BTC`](https://t.me/ccoinspace_bot) \\- Remove a coin\n"
-        "🧹 [`/clear`](https://t.me/ccoinspace_bot) \\- Clear portfolio\n"
-        "📈 [`/performance`](https://t.me/ccoinspace_bot) \\- Portfolio performance\n"
-        "💵 [`/price BTC`](https://t.me/ccoinspace_bot) \\- Get current price\n"
-        "📉 [`/graph`](https://t.me/ccoinspace_bot) \\- Show portfolio graph\n"
-        "🔔 [`/setalert BTC 70000`](https://t.me/ccoinspace_bot) \\- Set price alert\n"
-        "🤖 [`/ai_btc`](https://t.me/ccoinspace_bot) \\- AI analysis\n"
-        "📰 [`/news`](https://t.me/ccoinspace_bot) \\- Crypto news\n"
-        "🔗 [`/readmore`](https://t.me/ccoinspace_bot) \\- News links\n"
-        "📈 [`/backtest BTC`](https://t.me/Yccoinspace_bot) \\- Backtest strategy\n"
-        "💎 [`/premium`](https://t.me/Yccoinspace_bot) \\- Premium subscription info\n"
-        "💹 [`/leverage_signal`](https://t.me/Yccoinspace_bot) \\- Leverage signal"
+        "💰 `/add BTC 0.5 30000` \\- Add a coin to your portfolio\n"
+        "📊 `/portfolio` \\- Show current portfolio\n"
+        "🔁 `/update BTC 1.0` \\- Update coin amount\n"
+        "🗑 `/remove BTC` \\- Remove a coin\n"
+        "🧹 `/clear` \\- Clear your entire portfolio\n"
+        "📈 `/performance` \\- Show portfolio performance\n"
+        "💵 `/price BTC` \\- Get current price of a coin\n"
+        "📉 `/graph` \\- Show your portfolio chart\n"
+        "🔔 `/setalert BTC 70000` \\- Set a price alert\n"
+        "🤖 `/ai_btc` \\- AI market analysis for BTC\n"
+        "📰 `/news` \\- Latest crypto news\n"
+        "🔗 `/readmore` \\- Read full news articles\n"
+        "📈 `/backtest BTC` \\- Backtest trading strategy\n"
+        "💎 `/premium` \\- Premium subscription info\n"
+        "💹 `/leverage_signal` \\- Leverage signal suggestion"
     )
     await update.message.reply_text(msg, parse_mode="MarkdownV2")
-
 
 async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
