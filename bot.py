@@ -221,7 +221,39 @@ def predict_signal(features_df):
         print(f"❌ Tahmin hatası: {e}")
         return None
 
-# AI yorumu
+import joblib
+
+# SL ve TP modellerini yükle
+tp_model = None
+sl_model = None
+try:
+    tp_model = joblib.load("tp_model.pkl")
+    sl_model = joblib.load("sl_model.pkl")
+except Exception as e:
+    print("TP/SL modelleri yüklenemedi:", e)
+
+    import joblib
+
+# TP tahmin fonksiyonu
+def predict_tp(features):
+    try:
+        model = joblib.load("tp_model.pkl")
+        return model.predict(features)[0]
+    except Exception as e:
+        print("TP tahmin hatası:", e)
+        return None
+
+# SL tahmin fonksiyonu
+def predict_sl(features):
+    try:
+        model = joblib.load("sl_model.pkl")
+        return model.predict(features)[0]
+    except Exception as e:
+        print("SL tahmin hatası:", e)
+        return None
+
+
+
 async def generate_ai_comment(coin_data):
     name = coin_data["name"]
     price = coin_data["market_data"]["current_price"]["usd"]
@@ -242,8 +274,6 @@ async def generate_ai_comment(coin_data):
     ma_5 = sum(closes[-5:]) / 5
     ma_20 = sum(closes[-20:]) / 20
 
-    print(f"RSI: {rsi}, MACD: {macd}, Signal: {signal}, MA_5: {ma_5}, MA_20: {ma_20}")
-
     features = pd.DataFrame([{
         "RSI": rsi,
         "MACD": macd,
@@ -253,36 +283,44 @@ async def generate_ai_comment(coin_data):
     }])
 
     prediction = predict_signal(features)
+    tp = predict_tp(features)
+    sl = predict_sl(features)
+
+    # Sinyal formatı
     if prediction is None:
-        ai_signal = "⚠️ AI modeli yüklü değil veya hata oluştu."
-        leverage_suggestion = ""
-        risk_level = ""
+        ai_signal = "⚠️ AI tahmini başarısız."
     else:
-        ai_signal = "📈 AI Tahmin: BUY" if prediction == 1 else "📉 AI Tahmin: SELL"
+        ai_signal = "📈 BUY" if prediction == 1 else "📉 SELL"
 
-        # Kaldıraç önerisi
-        if prediction == 1 and rsi < 70:
-            leverage_suggestion = "📊 Önerilen kaldıraç: 5x Long"
-        elif prediction == 0 and rsi > 30:
-            leverage_suggestion = "📊 Önerilen kaldıraç: 5x Short"
-        else:
-            leverage_suggestion = "⚠️ Kaldıraçlı işlem önerilmez"
+    # SL / TP
+    tp_text = f"🎯 TP: ${tp:.2f}" if tp is not None and tp > 0 else "❌ TP tahmini başarısız."
+    sl_text = f"🛑 SL: ${sl:.2f}" if sl is not None and sl > 0 else "❌ SL tahmini başarısız."
 
-        # Risk değerlendirmesi
-        if rsi > 75 or abs(macd) < 0.05:
-            risk_level = "⚠️ Yüksek risk (kaldıraç önerilmez)"
-        else:
-            risk_level = "✅ Düşük risk (kaldıraç kullanılabilir)"
+    # Kaldıraç önerisi
+    if prediction == 1 and rsi < 70:
+        leverage = "📌 Kaldıraç: 5x Long"
+    elif prediction == 0 and rsi > 30:
+        leverage = "📌 Kaldıraç: 5x Short"
+    else:
+        leverage = "⚠️ Kaldıraçlı işlem önerilmez"
 
+    # Risk seviyesi
+    risk = "✅ Düşük Risk" if rsi < 75 and abs(macd) > 0.05 else "⚠️ Yüksek Risk"
+
+    # Final çıktı
     comment = (
-        f"{name} fiyatı: ${price:.2f}\n"
-        f"24 saatlik değişim: %{change_24h:.2f}, 7 gün: %{change_7d:.2f}\n\n"
-        f"{ai_signal}\n\n"
-        f"RSI: {rsi}, MACD: {macd}, Signal: {signal}, MA_5: {ma_5:.2f}, MA_20: {ma_20:.2f}\n\n"
-        f"{leverage_suggestion}\n"
-        f"{risk_level}"
+        f"📊 {name} (${price:.2f})\n"
+        f"24h: %{change_24h:.2f} | 7d: %{change_7d:.2f}\n\n"
+        f"{ai_signal}\n"
+        f"📉 RSI: {rsi:.2f} | 🧮 MACD: {macd:.2f}\n"
+        f"📈 MA(5): {ma_5:.2f} | MA(20): {ma_20:.2f}\n\n"
+        f"{tp_text}\n{sl_text}\n\n"
+        f"{leverage}\n{risk}"
     )
+
     return comment
+
+
 
 
 async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
