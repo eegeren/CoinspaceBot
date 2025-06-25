@@ -229,5 +229,29 @@
       1916984442
     ],
     "dislikes": []
+  },
+  {
+    "message_id": 799,
+    "text": "Bitcoin fiyat\u0131: $107620.00\n24 saatlik de\u011fi\u015fim: %1.47, 7 g\u00fcn: %2.64\n\n\u26a0\ufe0f AI modeli y\u00fckl\u00fc de\u011fil veya hata olu\u015ftu.\n\nRSI: 63.12, MACD: 529.04, Signal: 553.16, MA_5: 107584.82, MA_20: 107058.79",
+    "likes": [
+      1916984442
+    ],
+    "dislikes": []
+  },
+  {
+    "message_id": 809,
+    "text": "Solana fiyat\u0131: $144.42\n24 saatlik de\u011fi\u015fim: %-0.49, 7 g\u00fcn: %-2.07\n\n\ud83d\udcc8 AI Tahmin: BUY\n\nRSI: 37.44, MACD: -0.02, Signal: 0.26, MA_5: 144.21, MA_20: 145.37",
+    "likes": [
+      1916984442
+    ],
+    "dislikes": []
+  },
+  {
+    "message_id": 813,
+    "text": "Solana fiyat\u0131: $144.38\n24 saatlik de\u011fi\u015fim: %-0.64, 7 g\u00fcn: %-2.10\n\n\ud83d\udcc8 AI Tahmin: BUY\n\nRSI: 37.33, MACD: -0.03, Signal: 0.26, MA_5: 144.21, MA_20: 145.36\n\n\ud83d\udcca \u00d6nerilen kald\u0131ra\u00e7: 5x Long\n\u26a0\ufe0f Y\u00fcksek risk (kald\u0131ra\u00e7 \u00f6nerilmez)",
+    "likes": [
+      1916984442
+    ],
+    "dislikes": []
   }
 ]

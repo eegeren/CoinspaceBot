@@ -9,10 +9,8 @@ yfinance
 openai>=1.10.0
 ta
 fastapi 
-uvicorn
 scikit-learn 
 yfinance 
-ta 
 joblib
 pyrogram
 tgcrypto
