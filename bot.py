@@ -11,13 +11,46 @@ from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import time 
 import io
+import json
+import joblib
+import pandas as pd
 import hashlib
 from html import escape
 from openai import AsyncOpenAI
 import pandas as pd
 import ta
+from pyrogram import Client, filters
+import requests
+
+
 
 #BACKTEST **********************************
+
+
+
+
+from dotenv import load_dotenv
+load_dotenv()
+print(os.getenv("BOT_TOKEN")) 
+
+def load_accepted_users():
+    if not os.path.exists("accepted_users.json"):
+        return set()
+    with open("accepted_users.json", "r") as f:
+        try:
+            return set(json.load(f))
+        except json.JSONDecodeError:
+            return set()
+
+def save_accepted_users(users):
+    with open("accepted_users.json", "w") as f:
+        json.dump(list(users), f)
+
+accepted_users = load_accepted_users()
+
+
+
+
 
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
@@ -43,12 +76,12 @@ async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper()
     coin_id = symbol_to_id_map.get(symbol)
     if not coin_id:
-        await update.message.reply_text("❌ Coin bulunamadı.")
+        await update.message.reply_text("❌  Coin not found.")
         return
 
     df = await fetch_ohlc_data(coin_id)
     if df is None or df.empty:
-        await update.message.reply_text("❌ Veri alınamadı.")
+        await update.message.reply_text("❌ Failed to retrieve data.")
         return
 
     df["RSI"] = RSIIndicator(df["price"]).rsi()
@@ -75,9 +108,9 @@ async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sell_points.append((df.index[i], price))
             position = None
 
-    msg = f"📈 {symbol} için RSI + MA Backtest Sonucu (30 gün):\n"
-    msg += f"✅ Alım sayısı: {len(buy_points)}\n"
-    msg += f"💰 Toplam Kar: ${pnl:.2f}"
+    msg = f"📈 {symbol} RSI + MA Backtest Result for {symbol} (30 days)::\n"
+    msg += f"✅  Number of buys:  {len(buy_points)}\n"
+    msg += f"💰 Total Profit: ${pnl:.2f}"
 
     await update.message.reply_text(msg)
 
@@ -124,7 +157,7 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 openai_api_key = os.getenv("OPENAI_API_KEY")
-#news_api_key = os.getenv("NEWS_API_KEY")
+news_api_key = os.getenv("NEWS_API_KEY")
 client = AsyncOpenAI(api_key=openai_api_key)
 news_api_key ="506d562e0d4a434c97df2e3a51e4cd1c"
 
@@ -137,7 +170,7 @@ async def load_symbol_map():
             if response.status == 200:
                 ...
             else:
-                print("❌ Coin listesi alınamadı.")
+                print("❌ Failed to fetch coin list.")
 
 
 
@@ -164,8 +197,38 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- BASIC ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    print(f"Kullanıcı ID: {user_id}")
-    await update.message.reply_text(f"👋 Coinspace bot'a hoş geldin!\nSenin Telegram ID’n: `{user_id}`", parse_mode="Markdown")
+    if user_id not in accepted_users:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ I Agree", callback_data="accept_disclaimer")]
+        ])
+        disclaimer_text = (
+            "📢 *Disclaimer*\n\n"
+            "Coinspace Bot provides market insights and AI-powered signals to help users make informed decisions in the crypto space. "
+            "These signals are for informational purposes only and do *not* constitute financial advice.\n\n"
+            "To continue using the bot, please confirm your understanding by clicking below."
+        )
+        await update.message.reply_text(disclaimer_text, reply_markup=keyboard, parse_mode="Markdown")
+    else:
+        msg = (
+            "👋 *Welcome back to Coinspace Bot!*\n\n"
+            "🚀 Get daily AI-powered trading signals, price alerts, portfolio tracking, and live market updates.\n\n"
+            "🔐 *Upgrade to Premium* for full access:\n"
+            "• Unlimited AI Leverage Signals (Free users get only 2 per day)\n"
+            "• Access to full market summaries\n"
+            "• Priority support & early feature access\n\n"
+            "*💳 Subscription Plans:*\n"
+            "• 1 Month: $29.99\n"
+            "• 3 Months: $69.99\n"
+            "• 1 Year: $399.99\n\n"
+            "👉 *To upgrade*, choose a plan and complete payment:\n"
+            "[Pay for 1 Month](https://nowpayments.io/payment/?iid=5260731771)\n"
+            "[Pay for 3 Months](https://nowpayments.io/payment/?iid=4400895826)\n"
+            "[Pay for 1 Year](https://nowpayments.io/payment/?iid=4501340550)\n\n"
+            "After payment, use /premium command to activate your subscription."
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+
+
 
 
 async def fetch_price(coin_id: str):
@@ -191,7 +254,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     price = await fetch_price(coin_id)
     if price is not None:
-        await update.message.reply_text(f"{symbol} fiyatı: ${price}")
+        await update.message.reply_text(f"{symbol} price: ${price}")
     else:
         await update.message.reply_text(f"❌ {symbol} için fiyat alınamadı.")
 
@@ -275,30 +338,12 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler
 )
 import asyncio
-from your_module import (
-    start, help_command, price, portfolio, add, remove,
-    update_command, clear, setalert, graph, performance,
-    news_command, readmore, backtest, feedback_handler,
-    ai_comment, check_alerts, check_and_send_news,
-    load_symbol_map
-)
-from config import TOKEN  # veya doğrudan os.getenv("TOKEN")
+
 
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler
 )
 import asyncio
-from your_module import (
-    start, help_command, price, portfolio, add, remove,
-    update_command, clear, setalert, graph, performance,
-    news_command, readmore, backtest, feedback_handler,
-    ai_comment, check_alerts, check_and_send_news,
-    load_symbol_map
-)
-from config import TOKEN
-
-
-
 
 async def run_bot():
     print("🚀 run_bot() başlatılıyor...")
@@ -326,6 +371,9 @@ async def run_bot():
     app.add_handler(CommandHandler("news", news_command))
     app.add_handler(CommandHandler("readmore", readmore))
     app.add_handler(CommandHandler("backtest", backtest))
+    app.add_handler(CommandHandler("premium", premium))
+    app.add_handler(CommandHandler("leverage_signal", leverage_signal))
+    app.add_handler(CallbackQueryHandler(accept_disclaimer, pattern="^accept_disclaimer$"))
     app.add_handler(CallbackQueryHandler(feedback_handler))
 
     # AI komutları
@@ -340,6 +388,7 @@ async def run_bot():
     # Botu başlat ama run_polling() kullanmadan
     await app.initialize()
     await app.start()
+    await app.updater.start_polling() 
     print("✅ Bot başlatıldı.")
     print("Telegram bot started")
 
@@ -421,6 +470,8 @@ def exponential_moving_average(prices, window):
             ema.append(price * k + ema[-1] * (1 - k))
     return ema
 
+
+
 async def generate_ai_comment(coin_data):
     name = coin_data["name"]
     price = coin_data["market_data"]["current_price"]["usd"]
@@ -429,44 +480,32 @@ async def generate_ai_comment(coin_data):
     coin_id = coin_data["id"]
 
     ohlc_data = await fetch_ohlc_data(coin_id)
-    if not ohlc_data:
-        technicals = {}
-    else:
-        technicals = calculate_technical_indicators(ohlc_data) or {}
+    technicals = calculate_technical_indicators(ohlc_data) if ohlc_data else {}
 
-    rsi = technicals.get("RSI", "Bilinmiyor")
-    macd = technicals.get("MACD", "Bilinmiyor")
-    signal = technicals.get("Signal", "Bilinmiyor")
-    ma_5 = technicals.get("MA_5", "Bilinmiyor")
-    ma_20 = technicals.get("MA_20", "Bilinmiyor")
+    # Model tahmini için özellikleri hazırla
+    feature_data = {
+        "rsi": [technicals.get("RSI", 0)],
+        "macd": [technicals.get("MACD", 0)],
+        "signal": [technicals.get("MACD_Signal", 0)],
+        "ma_5": [technicals.get("MA_5", 0)],
+        "ma_20": [technicals.get("MA_20", 0)],
+        "volume": [technicals.get("VOLUME", 0)]
+    }
 
-    prompt = (
-        f"{name} için kısa ve net bir piyasa yorumu yaz.\n"
-        f"Anlık fiyat: ${price:.2f}\n"
-        f"24 saatlik değişim: {change_24h:.2f}%\n"
-        f"7 günlük değişim: {change_7d:.2f}%\n"
-        f"RSI: {rsi}, MACD: {macd}, Signal: {signal}, MA5: {ma_5}, MA20: {ma_20}\n\n"
-        f"Ayrıca kaldıraçlı işlem önerisi yap:\n"
-        f"- Pozisyon: LONG veya SHORT\n"
-        f"- Giriş fiyatı\n"
-        f"- Hedef fiyat\n"
-        f"- Stop-loss\n"
-        f"- Kaldıraç seviyesi (örn: 5x)\n\n"
-        f"Kısa, yatırımcı odaklı ve teknik terimlerle sadeleştirilmiş bir şekilde maksimum 100 kelime kullan."
+    df_features = pd.DataFrame(feature_data)
+
+    # Tahmin yap
+    prediction = model.predict(df_features)[0]
+    ai_signal = "📈 AI Tahmin: BUY" if prediction == 1 else "📉 AI Tahmin: SELL"
+
+    # Örnek yorumla birleştir
+    comment = (
+        f"{name}'ın 24 saatlik değişimi: %{change_24h:.2f}, 7 günlük değişimi: %{change_7d:.2f}.\n"
+        f"{ai_signal}\n\n"
+        f"RSI: {feature_data['rsi'][0]}, MACD: {feature_data['macd'][0]}, MA5: {feature_data['ma_5'][0]}, MA20: {feature_data['ma_20'][0]}"
     )
 
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=250,
-            temperature=0.7
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        print("❌ AI yorum hatası:", e)
-        return "⚠️ AI yorum alınamadı."
-
+    return comment
 
 async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
@@ -746,6 +785,31 @@ async def graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_photo(photo=InputFile(buf, filename="portfolio.png"))
 
+
+async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 1 Month – $29.99", url="https://nowpayments.io/payment/?iid=5260731771&source=button")],
+        [InlineKeyboardButton("🔵 3 Months – $70", url="https://nowpayments.io/payment/?iid=YOUR_3MONTH_ID")],
+        [InlineKeyboardButton("🟣 1 Year – $399", url="https://nowpayments.io/payment/?iid=YOUR_1YEAR_ID")],
+    ])
+
+    msg = (
+        "✨ *Upgrade to Coinspace Premium!*\n\n"
+        "🚀 Get access to:\n"
+        "• Up to 10 AI-based trading signals per day\n"
+        "• Leverage trading suggestions\n"
+        "• Priority market alerts and news\n"
+        "• Portfolio analysis tools\n\n"
+        "💰 *Pricing:*\n"
+        "1 Month: $29.99\n"
+        "3 Months: $70\n"
+        "1 Year: $399\n\n"
+        "_Pay securely with USDT (TRC20) using NOWPayments._"
+    )
+
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+
+
     # PERFORMANCE ---- ---- ----
 
 async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -800,6 +864,17 @@ def load_signals():
 def save_signals(data):
     with open(SIGNAL_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    accepted_users.add(user_id)
+    save_accepted_users(accepted_users)
+
+    await query.answer()
+    await query.edit_message_text("✅ Şartları kabul ettiniz. Komutları kullanmaya başlayabilirsiniz.")
+
 
 async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -894,3 +969,20 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_signals(signals)
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("✅ Geri bildirimin için teşekkürler.")
+
+import requests
+
+async def leverage_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        response = requests.get("http://localhost:8000/api/leverage-signal") 
+        data = response.json()
+        msg = f"""💹 *AI Kaldıraçlı Sinyal* ({data['pair']} – 5x {data['direction']})
+
+📈 *Giriş:* {data['entry']}  
+🎯 *Hedef:* {data['target']}  
+🛑 *Stop:* {data['stop']}  
+🤖 *Güven:* %{data['confidence']}"""
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        print("❌ leverage_signal hatası:", e)
+        await update.message.reply_text("❌ Sinyal alınamadı. Daha sonra tekrar deneyin.")

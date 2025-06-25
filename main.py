@@ -1,17 +1,13 @@
-# main.py
-
 from fastapi import FastAPI
-from contextlib import asynccontextmanager
 import asyncio
-from bot import run_bot
+from bot import run_bot  # bot.py içindeki async run_bot()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
     asyncio.create_task(run_bot())
-    yield
 
-app = FastAPI(lifespan=lifespan)
-
-@app.get("/")
-def read_root():
-    return {"status": "Coinspace bot is running"}
+@app.get("/api")
+def root():
+    return {"status": "Coinspace API running"}
