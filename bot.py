@@ -253,7 +253,6 @@ def predict_sl(features):
         return None
 
 
-
 async def generate_ai_comment(coin_data):
     name = coin_data["name"]
     price = coin_data["market_data"]["current_price"]["usd"]
@@ -269,6 +268,7 @@ async def generate_ai_comment(coin_data):
     if len(closes) < 26:
         return f"{name} için yeterli veri yok."
 
+    # Göstergeleri hesapla
     rsi = calculate_rsi(closes)
     macd, signal = calculate_macd(closes)
     ma_5 = sum(closes[-5:]) / 5
@@ -286,26 +286,51 @@ async def generate_ai_comment(coin_data):
     tp = predict_tp(features)
     sl = predict_sl(features)
 
-    # Sinyal formatı
-    if prediction is None:
-        ai_signal = "⚠️ AI tahmini başarısız."
-    else:
-        ai_signal = "📈 BUY" if prediction == 1 else "📉 SELL"
+    # Yorum oluşturma
+    def generate_natural_comment():
+        # RSI Yorumu
+        if rsi < 30:
+            rsi_c = "RSI aşırı satım bölgesinde, yükseliş potansiyeli olabilir."
+        elif rsi > 70:
+            rsi_c = "RSI aşırı alımda, düzeltme riski taşıyor."
+        else:
+            rsi_c = "RSI dengede, kararsız bir seyir var."
+
+        # MACD Yorumu
+        if macd > signal:
+            macd_c = "MACD sinyalin üzerinde, momentum pozitif."
+        elif macd < signal:
+            macd_c = "MACD sinyalin altında, zayıf seyir gözleniyor."
+        else:
+            macd_c = "MACD sinyale çok yakın, yön belirsiz."
+
+        # MA Yorumu
+        if ma_5 > ma_20:
+            trend_c = "Kısa vadeli ortalama yukarıda, pozitif trend mümkün."
+        else:
+            trend_c = "Kısa vadeli ortalama aşağıda, düşüş baskısı sürebilir."
+
+        return f"{rsi_c} {macd_c} {trend_c}"
+
+    short_comment = generate_natural_comment()
+
+    # AI sinyali
+    ai_signal = "⚠️ AI tahmini başarısız." if prediction is None else ("📈 BUY" if prediction == 1 else "📉 SELL")
 
     # SL / TP
     tp_text = f"🎯 TP: ${tp:.2f}" if tp is not None and tp > 0 else "❌ TP tahmini başarısız."
     sl_text = f"🛑 SL: ${sl:.2f}" if sl is not None and sl > 0 else "❌ SL tahmini başarısız."
 
-    # Kaldıraç önerisi
-    if prediction == 1 and rsi < 70:
+    # Kaldıraç önerisi (geliştirildi)
+    if prediction == 1 and rsi < 65 and ma_5 > ma_20:
         leverage = "📌 Kaldıraç: 5x Long"
-    elif prediction == 0 and rsi > 30:
+    elif prediction == 0 and rsi > 35 and ma_5 < ma_20:
         leverage = "📌 Kaldıraç: 5x Short"
     else:
         leverage = "⚠️ Kaldıraçlı işlem önerilmez"
 
     # Risk seviyesi
-    risk = "✅ Düşük Risk" if rsi < 75 and abs(macd) > 0.05 else "⚠️ Yüksek Risk"
+    risk = "✅ Düşük Risk" if 30 < rsi < 70 and abs(macd - signal) > 0.05 else "⚠️ Yüksek Risk"
 
     # Final çıktı
     comment = (
@@ -315,11 +340,11 @@ async def generate_ai_comment(coin_data):
         f"📉 RSI: {rsi:.2f} | 🧮 MACD: {macd:.2f}\n"
         f"📈 MA(5): {ma_5:.2f} | MA(20): {ma_20:.2f}\n\n"
         f"{tp_text}\n{sl_text}\n\n"
-        f"{leverage}\n{risk}"
+        f"{leverage}\n{risk}\n\n"
+        f"🧠 AI Yorumu: {short_comment}"
     )
 
     return comment
-
 
 
 
@@ -398,24 +423,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "*📚 Coinspace Komutları*\n\n"
-        "💰 `/add BTC 0.5 30000` - Coin ekle\n"
-        "📊 `/portfolio` - Portföyü göster\n"
-        "🔁 `/update BTC 1.0` - Coin miktarını güncelle\n"
-        "🗑 `/remove BTC` - Coin sil\n"
-        "🧹 `/clear` - Portföyü temizle\n"
-        "📈 `/performance` - Portföy performansı\n"
-        "💵 `/price BTC` - Coin fiyatı\n"
-        "📉 `/graph` - Portföy grafiği\n"
-        "🔔 `/setalert BTC 70000` - Fiyat uyarısı\n"
-        "🤖 `/ai_btc` - AI yorumu\n"
-        "📰 `/news` - Kripto haberleri\n"
-        "🔗 `/readmore` - Haber linkleri\n"
-        "📈 `/backtest BTC` - Strateji testi\n"
-        "💎 `/premium` - Premium abonelik\n"
-        "💹 `/leverage_signal` - Kaldıraçlı sinyal"
+        "*📚 Coinspace Commands*\n\n"
+        "💰 [`/add BTC 0.5 30000`](https://t.me/ccoinspace_bot) \\- Add a coin to portfolio\n"
+        "📊 [`/portfolio`](https://t.me/ccoinspace_bot) \\- Show current portfolio\n"
+        "🔁 [`/update BTC 1.0`](https://t.me/ccoinspace_bot) \\- Update coin amount\n"
+        "🗑 [`/remove BTC`](https://t.me/ccoinspace_bot) \\- Remove a coin\n"
+        "🧹 [`/clear`](https://t.me/ccoinspace_bot) \\- Clear portfolio\n"
+        "📈 [`/performance`](https://t.me/ccoinspace_bot) \\- Portfolio performance\n"
+        "💵 [`/price BTC`](https://t.me/ccoinspace_bot) \\- Get current price\n"
+        "📉 [`/graph`](https://t.me/ccoinspace_bot) \\- Show portfolio graph\n"
+        "🔔 [`/setalert BTC 70000`](https://t.me/ccoinspace_bot) \\- Set price alert\n"
+        "🤖 [`/ai_btc`](https://t.me/ccoinspace_bot) \\- AI analysis\n"
+        "📰 [`/news`](https://t.me/ccoinspace_bot) \\- Crypto news\n"
+        "🔗 [`/readmore`](https://t.me/ccoinspace_bot) \\- News links\n"
+        "📈 [`/backtest BTC`](https://t.me/Yccoinspace_bot) \\- Backtest strategy\n"
+        "💎 [`/premium`](https://t.me/Yccoinspace_bot) \\- Premium subscription info\n"
+        "💹 [`/leverage_signal`](https://t.me/Yccoinspace_bot) \\- Leverage signal"
     )
     await update.message.reply_text(msg, parse_mode="MarkdownV2")
+
 
 async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
