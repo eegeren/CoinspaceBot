@@ -1,7 +1,7 @@
 import os
 import asyncio
 import aiohttp
-from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 import matplotlib.pyplot as plt
 import io
@@ -16,6 +16,8 @@ from urllib.parse import urlparse, urlunparse
 import hashlib
 import logging
 from dotenv import load_dotenv
+from functools import wraps
+from datetime import datetime, timedelta
 
 # Logging configuration
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -28,6 +30,7 @@ TOKEN = os.getenv("BOT_TOKEN", "dummy_token")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "dummy_api_key")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "dummy_openai_key")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "506d562e0d4a434c97df2e3a51e4cd1c")
+OWNER_CHAT_ID = int(os.getenv("OWNER_CHAT_ID", "0"))  # Bot sahibi ID'si
 
 # OpenAI client
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -47,49 +50,72 @@ except Exception as e:
     logger.error(f"❌ Model loading failed: {e}")
 
 # Accepted users
-# Fonksiyon: Kabul edilmiş kullanıcıları yükler (accepted_users.json dosyasından)
+# Amaç: Kabul edilmiş kullanıcıları data/accepted_users.json dosyasından yükler
 def load_accepted_users():
-    if not os.path.exists("accepted_users.json"):
+    if not os.path.exists("data/accepted_users.json"):
         return set()
-    with open("accepted_users.json", "r") as f:
+    with open("data/accepted_users.json", "r") as f:
         try:
             return set(json.load(f))
         except json.JSONDecodeError:
             return set()
 
-# Fonksiyon: Kabul edilmiş kullanıcıları kaydeder (accepted_users.json dosyasına)
+# Amaç: Kabul edilmiş kullanıcıları data/accepted_users.json dosyasına kaydeder
 def save_accepted_users(users):
-    with open("accepted_users.json", "w") as f:
+    os.makedirs("data", exist_ok=True)
+    with open("data/accepted_users.json", "w") as f:
         json.dump(list(users), f)
 
-# Fonksiyon: Kullanıcının kabul edilmiş olup olmadığını kontrol eder
+# Amaç: Kullanıcının kabul edilmiş olup olmadığını kontrol eder
 async def check_user_accepted(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return update.effective_user.id in load_accepted_users()
 
 accepted_users = load_accepted_users()
 
-# Premium users
-# Fonksiyon: Premium kullanıcıları yükler (premium_users.json dosyasından, simüle edilmiş)
-def load_premium_users():
-    if not os.path.exists("premium_users.json"):
+# Admin users
+# Amaç: Admin kullanıcılarını data/admins.json dosyasından yükler
+def load_admin_users():
+    if not os.path.exists("data/admins.json"):
         return set()
-    with open("premium_users.json", "r") as f:
+    with open("data/admins.json", "r") as f:
         try:
             return set(json.load(f))
         except json.JSONDecodeError:
             return set()
 
-# Fonksiyon: Premium kullanıcıları kaydeder (premium_users.json dosyasına)
-def save_premium_users(users):
-    with open("premium_users.json", "w") as f:
+# Amaç: Admin kullanıcılarını data/admins.json dosyasına kaydeder
+def save_admin_users(users):
+    os.makedirs("data", exist_ok=True)
+    with open("data/admins.json", "w") as f:
         json.dump(list(users), f)
 
-# Fonksiyon: Kullanıcının premium olup olmadığını kontrol eder
+# Amaç: Kullanıcının admin olup olmadığını kontrol eder
+def check_admin(user_id):
+    return user_id in load_admin_users() or user_id == OWNER_CHAT_ID
+
+# Premium users
+# Amaç: Premium kullanıcılarını data/premium_users.json dosyasından yükler
+def load_premium_users():
+    if not os.path.exists("data/premium_users.json"):
+        return set()
+    with open("data/premium_users.json", "r") as f:
+        try:
+            return set(json.load(f))
+        except json.JSONDecodeError:
+            return set()
+
+# Amaç: Premium kullanıcılarını data/premium_users.json dosyasına kaydeder
+def save_premium_users(users):
+    os.makedirs("data", exist_ok=True)
+    with open("data/premium_users.json", "w") as f:
+        json.dump(list(users), f)
+
+# Amaç: Kullanıcının premium olup olmadığını kontrol eder
 def check_premium_status(user_id):
     return user_id in load_premium_users()
 
 # News and signal files
-SENT_NEWS_FILE = "sent_news.json"
+SENT_NEWS_FILE = "data/sent_news.json"
 if os.path.exists(SENT_NEWS_FILE):
     with open(SENT_NEWS_FILE, "r") as f:
         try:
@@ -98,10 +124,9 @@ if os.path.exists(SENT_NEWS_FILE):
             sent_news_urls = set()
 else:
     sent_news_urls = set()
+SIGNAL_FILE = "data/signals.json"
 
-SIGNAL_FILE = "signals.json"
-
-# Fonksiyon: Sinyal verilerini yükler (signals.json dosyasından)
+# Amaç: Sinyal verilerini data/signals.json dosyasından yükler
 def load_signals():
     if os.path.exists(SIGNAL_FILE):
         with open(SIGNAL_FILE, "r") as f:
@@ -111,15 +136,16 @@ def load_signals():
                 return []
     return []
 
-# Fonksiyon: Sinyal verilerini kaydeder (signals.json dosyasına)
+# Amaç: Sinyal verilerini data/signals.json dosyasına kaydeder
 def save_signals(data):
+    os.makedirs("data", exist_ok=True)
     with open(SIGNAL_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 # Coin symbol map
 symbol_to_id_map = {}
 
-# Fonksiyon: Binance API'den coin sembollerini yükler ve ek coinler ekler
+# Amaç: Binance API'den coin sembollerini yükler ve ek coinler ekler
 async def load_symbol_map():
     global symbol_to_id_map
     url = "https://api.binance.com/api/v3/exchangeInfo"
@@ -129,35 +155,36 @@ async def load_symbol_map():
             if response.status == 200:
                 data = await response.json()
                 symbol_to_id_map.update({symbol["symbol"].replace("USDT", "").upper(): symbol["symbol"] for symbol in data["symbols"] if symbol["status"] == "TRADING" and symbol["symbol"].endswith("USDT")})
-                additional_coins = {"BNB", "ADA", "XRP", "DOT", "LINK"}  # Popüler ek coinler
+                additional_coins = {"BNB", "ADA", "XRP", "DOT", "LINK"}
                 for coin in additional_coins:
                     if any(symbol["symbol"] == f"{coin}USDT" for symbol in data["symbols"] if symbol["status"] == "TRADING"):
                         symbol_to_id_map[coin.upper()] = f"{coin}USDT"
                 logger.info(f"✅ Coin symbols loaded with additional coins: {list(symbol_to_id_map.keys())}")
             else:
                 logger.error(f"❌ Failed to fetch coin list: status={response.status}")
+                symbol_to_id_map = {"BTC": "BTCUSDT", "ETH": "ETHUSDT"}
 
 # Helper functions
-# Fonksiyon: URL'yi normalleştirir
+# Amaç: URL'yi normalleştirir
 def normalize_url(raw_url):
     if not raw_url:
         return ""
     parsed = urlparse(raw_url)
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
 
-# Fonksiyon: Gönderilen haber URL'lerini kaydeder
+# Amaç: Gönderilen haber URL'lerini data/sent_news.json dosyasına kaydeder
 def save_sent_urls():
+    os.makedirs("data", exist_ok=True)
     with open(SENT_NEWS_FILE, "w") as f:
         json.dump(list(sent_news_urls), f)
 
-# Fonksiyon: Haber URL'si ve başlığı için benzersiz anahtar oluşturur
+# Amaç: Haber URL'si ve başlığı için benzersiz anahtar oluşturur
 def get_news_key(url, title):
     norm_url = normalize_url(url)
     key_base = f"{norm_url}|{title.strip().lower()}"
     return hashlib.md5(key_base.encode()).hexdigest()
 
-# Fetch price
-# Fonksiyon: Belirtilen sembol için fiyat verisini çeker
+# Amaç: Belirtilen sembol için fiyat verisini Binance API'den çeker
 async def fetch_price(symbol: str):
     full_symbol = symbol_to_id_map.get(symbol.upper(), f"{symbol.upper()}USDT")
     url = "https://api.binance.com/api/v3/ticker/price"
@@ -171,8 +198,7 @@ async def fetch_price(symbol: str):
             logger.error(f"❌ Failed to fetch price for {full_symbol}: status={response.status}")
             return None
 
-# Price command
-# Fonksiyon: /pr komutu ile coin fiyatını gösterir
+# Amaç: /pr komutu ile coin fiyatını gösterir
 async def pr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please enter a coin: /pr BTC")
@@ -187,8 +213,7 @@ async def pr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ Failed to retrieve price for {symbol}.")
 
-# Fetch OHLC data
-# Fonksiyon: Belirtilen sembol için OHLC verilerini çeker
+# Amaç: Belirtilen sembol için OHLC verilerini Binance API'den çeker
 async def fetch_ohlc_data(symbol: str, days=7):
     full_symbol = symbol_to_id_map.get(symbol.upper(), f"{symbol.upper()}USDT")
     url = "https://api.binance.com/api/v3/klines"
@@ -217,8 +242,7 @@ async def fetch_ohlc_data(symbol: str, days=7):
             logger.error(f"❌ Failed to fetch OHLC data for {full_symbol}: status={response.status}")
             return None, 0.0, 0.0
 
-# Technical indicators
-# Fonksiyon: RSI göstergesini hesaplar
+# Amaç: RSI göstergesini hesaplar
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return None
@@ -232,7 +256,7 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
-# Fonksiyon: Üssel Hareketli Ortalama (EMA) hesaplar
+# Amaç: Üssel Hareketli Ortalama (EMA) hesaplar
 def exponential_moving_average(prices, window):
     if len(prices) < window:
         return None
@@ -245,7 +269,7 @@ def exponential_moving_average(prices, window):
             ema.append(price * k + ema[-1] * (1 - k))
     return ema
 
-# Fonksiyon: MACD göstergesini hesaplar
+# Amaç: MACD göstergesini hesaplar
 def calculate_macd(prices):
     if len(prices) < 26:
         return None, None
@@ -260,8 +284,7 @@ def calculate_macd(prices):
     signal_line = exponential_moving_average(macd_line, 9)
     return round(macd_line[-1], 2), round(signal_line[-1], 2) if signal_line else 0.0
 
-# Model predictions
-# Fonksiyon: Sinyal tahmini yapar
+# Amaç: Sinyal tahmini yapar
 def predict_signal(features_df):
     global model
     if not model:
@@ -274,7 +297,7 @@ def predict_signal(features_df):
         logger.error(f"❌ Prediction error: {e}")
         return None
 
-# Fonksiyon: Take Profit (TP) tahmini yapar
+# Amaç: Take Profit (TP) tahmini yapar
 def predict_tp(features):
     global tp_model
     if not tp_model:
@@ -286,7 +309,7 @@ def predict_tp(features):
         logger.error(f"❌ TP prediction error: {e}")
         return None
 
-# Fonksiyon: Stop Loss (SL) tahmini yapar
+# Amaç: Stop Loss (SL) tahmini yapar
 def predict_sl(features):
     global sl_model
     if not sl_model:
@@ -298,8 +321,7 @@ def predict_sl(features):
         logger.error(f"❌ SL prediction error: {e}")
         return None
 
-# Generate AI comment
-# Fonksiyon: AI tabanlı yorum oluşturur
+# Amaç: AI tabanlı yorum oluşturur
 async def generate_ai_comment(coin_data):
     name = coin_data["symbol"].replace("USDT", "")
     price = coin_data["price"]
@@ -382,27 +404,25 @@ async def generate_ai_comment(coin_data):
     ai_signal = "⚠️ AI prediction failed." if prediction is None else ("📈 BUY" if prediction == 1 else "📉 SELL")
     tp_text = f"🎯 TP: ${tp:.2f}" if tp else "❌ TP prediction failed."
     sl_text = f"🛑 SL: ${sl:.2f}" if sl else "❌ SL prediction failed."
-    leverage = "💪 📈 Leverage: 5x Long" if prediction == 1 else "💪 📉 Leverage: 5x Short"  # Emoji ile hizalı
+    leverage = "💪 📈 Leverage: 5x Long" if prediction == 1 else "💪 📉 Leverage: 5x Short"
     risk = "⚠️ ✅ Low Risk" if 30 < rsi < 70 and abs(macd - signal) > 0.05 and tp and sl and abs((tp - sl) / price) < 0.1 and volatility / price < 0.05 else "⚠️ 🚨 High Risk"
     short_comment = generate_natural_comment()
 
-    # Biçimlendirme: Pozitif ve negatif değerler için tutarlı format
-    change_24h_str = f"{change_24h:+.2f}%"  # + ile pozitif, - ile negatif
-    change_7d_str = f"{change_7d:+.2f}%"    # + ile pozitif, - ile negatif
+    change_24h_str = f"{change_24h:+.2f}%"
+    change_7d_str = f"{change_7d:+.2f}%"
 
     return (
-        f"📊 {name.upper()} (${price:.2f})\n"  # Sembolü büyük harf ile tutarlılık
-        f"📈 24h: {change_24h_str} | 📅 7d: {change_7d_str}\n\n"  # Emoji ile hizalı
+        f"📊 {name.upper()} (${price:.2f})\n"
+        f"📈 24h: {change_24h_str} | 📅 7d: {change_7d_str}\n\n"
         f"💡 {ai_signal}\n"
         f"📉 RSI: {rsi:.2f} | 🧮 MACD: {macd:.2f}\n"
         f"📈 MA(5): {ma_5:.2f} | MA(20): {ma_20:.2f}\n\n"
-        f"🎯 TP: ${tp:.2f} | 🛑 SL: ${sl:.2f}\n\n"  # Aynı satırda hizalı
-        f"{leverage}  |  {risk}\n\n"  # Boşluklarla hizalı
+        f"🎯 TP: ${tp:.2f} | 🛑 SL: ${sl:.2f}\n\n"
+        f"{leverage}  |  {risk}\n\n"
         f"🧠 AI Comment: {short_comment}"
     )
 
-
-# Fonksiyon: AI yorumunu işler ve gönderir
+# Amaç: AI yorumunu işler ve gönderir
 async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     if not text.startswith("/ai"):
@@ -433,45 +453,44 @@ async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"ai_comment error: {e}, symbol={symbol}, coin_data={coin_data}")
         await update.message.reply_text(f"❌ Error occurred during processing: {str(e)}. Please try again later.")
-        
 
-# Portfolio and Alert functions
-# Fonksiyon: Kullanıcının portföyünü döndürür (simüle edilmiş)
+# Amaç: Kullanıcının portföyünü döndürür (simüle edilmiş)
 def get_portfolio(user_id):
     return {}  # Simulated
 
-# Fonksiyon: Portföye coin ekler (simüle edilmiş)
+# Amaç: Portföye coin ekler (simüle edilmiş)
 def add_coin(user_id, symbol, amount, buy_price=None):
     return True  # Simulated
 
-# Fonksiyon: Portföyden coin kaldırır (simüle edilmiş)
+# Amaç: Portföyden coin kaldırır (simüle edilmiş)
 def remove_coin(user_id, symbol):
     return True  # Simulated
 
-# Fonksiyon: Portföydaki coin miktarını günceller (simüle edilmiş)
+# Amaç: Portföydaki coin miktarını günceller (simüle edilmiş)
 def update_coin(user_id, symbol, amount):
     return True  # Simulated
 
-# Fonksiyon: Portföyü temizler (simüle edilmiş)
+# Amaç: Portföyü temizler (simüle edilmiş)
 def clear_portfolio(user_id):
     return True  # Simulated
 
-# Fonksiyon: Tüm uyarıları döndürür (simüle edilmiş)
+# Amaç: Tüm uyarıları döndürür (simüle edilmiş)
 def get_all_alerts():
     return []  # Simulated
 
-# Fonksiyon: Uyarıyı siler (simüle edilmiş)
+# Amaç: Uyarıyı siler (simüle edilmiş)
 def delete_alert(user_id, symbol):
     return True  # Simulated
 
-# Fonksiyon: Fiyat uyarı ekler (simüle edilmiş)
+# Amaç: Fiyat uyarı ekler (simüle edilmiş)
 def add_alert(user_id, symbol, target_price):
     return True  # Simulated
 
-# Commands
-# Fonksiyon: Botun başlangıç mesajını işler
+# Amaç: Botun başlangıç mesajını işler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    save_user(user_id)
+    update_user_metadata(user_id)
     if not await check_user_accepted(update, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Understand", callback_data="accept_disclaimer")]])
         disclaimer_text = (
@@ -483,27 +502,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(disclaimer_text, reply_markup=keyboard, parse_mode="MarkdownV2")
     else:
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📖 View Commands (/help)", callback_data="help")]])
-        msg = (
-            f"👋 Welcome back to Coinspace Bot\\!\n\n"
-            f"🚀 Your User ID: `{user_id}`\n\n"
-            "🚀 Get daily AI\\-supported trading signals, price alerts, portfolio tracking, and live market updates\\.\n\n"
-            "🔐 Upgrade to Premium:\n"
-            "• Unlimited AI Leverage Signals \\(Free users get only 2 signals per day\\)\n"
-            "• Full market overview access\n"
-            "• Priority support and early feature access\n\n"
-            "💳 Subscription Plans:\n"
-            "• 1 Month: \\$29\\.99\n"
-            "• 3 Months: \\$69\\.99\n"
-            "• 1 Year: \\$399\\.99\n\n"
-            "👉 To upgrade, select a plan and complete the payment:\n"
-            "[1 Month Payment](https://nowpayments.io/payment/?iid\\=5260731771)\n"
-            "[3 Months Payment](https://nowpayments.io/payment/?iid\\=4400895826)\n"
-            "[1 Year Payment](https://nowpayments.io/payment/?iid\\=4501340550)\n\n"
-            "✅ After payment, activate your subscription with the /activate_premium command.\n\n"
-            "Click the button below to view available commands: /help"
-        )
-        await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="MarkdownV2", disable_web_page_preview=True)
-# Fonksiyon: Hata işleyicisi
+
+    msg = (
+        "<b>👋 Welcome back to Coinspace Bot!</b>\n\n"
+        "<b>🚀 Your User ID:</b> <code>{user_id}</code>\n\n"
+        "<b>🚀 Get daily AI-supported trading signals, price alerts, portfolio tracking, and live market updates.</b>\n\n"
+        "<b>🔐 Upgrade to Premium:</b>\n"
+        "• Unlimited AI Leverage Signals (Free users get only 2 signals per day)\n"
+        "• Full market overview access\n"
+        "• Priority support and early feature access\n\n"
+        "<b>💳 Subscription Plans:</b>\n"
+        "• 1 Month: $29.99\n"
+        "• 3 Months: $69.99\n"
+        "• 1 Year: $399.99\n\n"
+        "<b>👉 To upgrade, select a plan and complete the payment:</b>\n"
+        "🔗 <a href='https://nowpayments.io/payment/?iid=5260731771'>1 Month Payment</a>\n"
+        "🔗 <a href='https://nowpayments.io/payment/?iid=4400895826'>3 Months Payment</a>\n"
+        "🔗 <a href='https://nowpayments.io/payment/?iid=4501340550'>1 Year Payment</a>\n\n"
+        "✅ After payment, activate your subscription with the <b>/activate_premium</b> command.\n\n"
+        "👇 Click the button below to view available commands:"
+    ).format(user_id=user_id)
+
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+
+# Amaç: Hata işleyicisi
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}")
     if update and update.effective_message:
@@ -512,8 +534,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             pass
 
-
-# Fonksiyon: Yardım komutunu işler
+# Amaç: Yardım komutunu işler
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"help_command: Starting, user: {update.effective_user.id}")
     if not await check_user_accepted(update, context):
@@ -527,29 +548,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = (
-    "*📚 Coinspace Commands*\n\n"
-    "*💼 Portfolio*\n"
-    "➕ `/add BTC 1 30000` — Add coin\n"
-    "🔁 `/upd BTC 1.5` — Update amount\n"
-    "🗑 `/rm BTC` — Remove coin\n"
-    "🧹 `/clr` — Clear portfolio\n"
-    "📊 `/port` — View portfolio\n"
-    "📈 `/perf` — View performance\n"
-    "📉 `/gr` — Portfolio graph (Premium Only)\n\n"
-
-    "*📌 Market Tools*\n"
-    "💰 `/pr BTC` — Price info\n"
-    "⏰ `/alert BTC 70K` — Price alert (Premium Only)\n"
-    "🧠 `/ai BTC` — AI comment (Premium Only)\n"
-    "🧪 `/bt BTC` — Backtest (Premium Only)\n"
-    "⚙️ `/lev` — Leverage signal\n\n"
-
-    "*📰 News & Premium*\n"
-    "🗞 `/nw` — News\n"
-    "🔗 `/rmore` — Links\n"
-    "💎 `/prem` — Premium\n"
-    "🔑 `/activate_premium` — Activate Premium (after payment)"
-)
+        "*🤖 Coinspace Commands*\n\n"
+        "📊 *Portfolio*\n"
+        "• `/add BTC 0\\.5 30000` \\- Add coin\n"
+        "• `/upd BTC 1\\.0` \\- Update coin\n"
+        "• `/rm BTC` \\- Remove coin\n"
+        "• `/clr` \\- Clear portfolio\n"
+        "• `/port` \\- View portfolio\n"
+        "• `/perf` \\- View performance\n"
+        "• `/gr` \\- View graph\n\n"
+        "💹 *Market Tools*\n"
+        "• `/pr BTC` \\- Check price\n"
+        "• `/alert BTC 70000` \\- Set alert\n"
+        "• `/ai BTC` \\- AI signal \\(Premium\\)\n"
+        "• `/bt BTC` \\- Backtest\n\n"
+        "📰 *News & Premium*\n"
+        "• `/nw` \\- Latest news\n"
+        "• `/nmore` \\- More news\n"
+        "• `/prem` \\- Upgrade to Premium\n"
+    )
 
     try:
         if update.message:
@@ -560,7 +577,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"help_command error: {e}")
 
-# Fonksiyon: Buton tıklamalarını işler
+# Amaç: Buton tıklamalarını işler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -569,11 +586,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "accept_disclaimer":
         await accept_disclaimer(update, context)
 
-
-
-        
-
-# Fonksiyon: Portföy bilgilerini gösterir
+# Amaç: Portföy bilgilerini gösterir
 async def port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     holdings = get_portfolio(user_id)
@@ -595,7 +608,7 @@ async def port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"\n💰 Total Value: ${total_value:.2f}"
     await update.message.reply_text(msg)
 
-# Fonksiyon: Portföye coin ekler
+# Amaç: Portföye coin ekler
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) not in [2, 3]:
         await update.message.reply_text("❌ Usage: /add <coin> <amount> [buy_price] (e.g., /add BTC 0.5 30000)")
@@ -614,7 +627,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f" Buy price: ${buy_price}"
     await update.message.reply_text(msg)
 
-# Fonksiyon: Portföyden coin kaldırır
+# Amaç: Portföyden coin kaldırır
 async def rm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /rm <coin> (e.g., /rm BTC)")
@@ -627,7 +640,7 @@ async def rm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ {symbol} not found in portfolio.")
 
-# Fonksiyon: Portföydaki coin miktarını günceller
+# Amaç: Portföydaki coin miktarını günceller
 async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.message.reply_text("❌ Usage: /upd <coin> <amount> (e.g., /upd BTC 1.0)")
@@ -645,7 +658,7 @@ async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ {symbol} not found in portfolio, add it with /add first.")
 
-# Fonksiyon: Portföyü temizler
+# Amaç: Portföyü temizler
 async def clr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     success = clear_portfolio(user_id)
@@ -654,7 +667,7 @@ async def clr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❗ No data to clear.")
 
-# Fonksiyon: Portföy grafiğini oluşturur
+# Amaç: Portföy grafiğini oluşturur
 async def gr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not check_premium_status(user_id):
@@ -706,7 +719,7 @@ async def gr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plt.close()
     await update.message.reply_photo(photo=InputFile(buf, filename="portfolio_graph.png"))
 
-# Fonksiyon: Portföy performansını gösterir
+# Amaç: Portföy performansını gösterir
 async def perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     portfolio = get_portfolio(user_id)
@@ -732,7 +745,7 @@ async def perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"\n💼 Total P/L: ${total_pl:.2f}"
     await update.message.reply_text(msg)
 
-# Fonksiyon: Fiyat uyarılarını ayarlar
+# Amaç: Fiyat uyarılarını ayarlar
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.message.reply_text("Usage: /alert <coin> <price> (e.g., /alert BTC 70000)")
@@ -753,7 +766,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_alert(user_id, symbol, target_price)
     await update.message.reply_text(f"🔔 Alert set for {symbol} at ${target_price}.")
 
-# Fonksiyon: Fiyat uyarılarını kontrol eder ve bildirir
+# Amaç: Fiyat uyarılarını kontrol eder ve bildirir
 async def check_alerts(app):
     while True:
         alerts = get_all_alerts() or []
@@ -775,7 +788,7 @@ async def check_alerts(app):
                         logger.error(f"❌ Notification failed: {e}")
         await asyncio.sleep(300)
 
-# Fonksiyon: Haber API'sinden haber verilerini çeker
+# Amaç: Haber API'sinden haber verilerini çeker
 async def fetch_newsapi_news():
     url = f"https://newsapi.org/v2/top-headlines?category=business&q=crypto&apiKey={NEWS_API_KEY}"
     async with aiohttp.ClientSession() as session:
@@ -785,7 +798,7 @@ async def fetch_newsapi_news():
                 return await response.json()
             return None
 
-# Fonksiyon: Haber özetini oluşturur
+# Amaç: Haber özetini oluşturur
 async def summarize_news(title, description):
     prompt = f"Write a short summary of the following news:\n\nTitle: {title}\nDescription: {description}\n\nPrepare a concise summary for investors."
     try:
@@ -795,7 +808,7 @@ async def summarize_news(title, description):
         logger.error(f"❌ Summary generation error: {e}")
         return "⚠️ Summary generation failed."
 
-# Fonksiyon: Haberleri gösterir
+# Amaç: Haberleri gösterir
 async def nw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("🚀 /news command triggered")
     news_data = await fetch_newsapi_news()
@@ -821,11 +834,11 @@ async def nw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sent_count == 0:
         await update.message.reply_text("⚠️ No new news available.")
 
-# Fonksiyon: Haber linklerini gösterir
+# Amaç: Haber linklerini gösterir
 async def rmore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧭 View news links with the /nw command.")
 
-# Fonksiyon: Backtest komutunu işler
+# Amaç: Backtest komutunu işler
 async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /bt <coin> (e.g., /bt BTC)")
@@ -859,7 +872,7 @@ async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"📈 {symbol} RSI + MA Backtest Result (30 days):\n✅ Buy count: {len(buy_points)}\n💰 Total Profit: ${pnl:.2f}"
     await update.message.reply_text(msg)
 
-# Fonksiyon: Premium planları gösterir
+# Amaç: Premium planları gösterir
 async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 1 Month – $29.99", url="https://nowpayments.io/payment/?iid=5260731771")],
@@ -884,15 +897,14 @@ async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
 
-# Fonksiyon: Premium abonelik aktivasyonu sağlar (simüle edilmiş)
+# Amaç: Premium abonelik aktivasyonunu sağlar
 async def activate_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /activate_premium <payment_id> (e.g., /activate_premium 5260731771)")
         return
     payment_id = context.args[0]
     user_id = update.effective_user.id
-    # Simüle edilmiş kontrol (gerçekte ödeme doğrulama API ile yapılmalı)
-    valid_payments = {"5260731771", "4400895826", "4501340550"}  # Örnek ödeme ID'leri
+    valid_payments = {"5260731771", "4400895826", "4501340550"}
     if payment_id in valid_payments:
         premium_users.add(user_id)
         save_premium_users(premium_users)
@@ -900,7 +912,233 @@ async def activate_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Invalid payment ID. Please contact the bot owner for assistance.")
 
-# Fonksiyon: Kullanıcı kabul şartlarını kabul eder
+# Amaç: Admin panelini gösterir
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_admin(user_id):
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
+
+    msg = (
+        "<b>🔧 Admin Panel</b>\n\n"
+        "• <code>/broadcast</code> – Send a message to all users (Not implemented)\n"
+        "• <code>/users</code> – Show total registered users (Not implemented)\n"
+        "• <code>/make_admin <user_id></code> – Grant admin rights\n"
+        "• <code>/remove_admin <user_id></code> – Revoke admin rights\n"
+        "• <code>/make_premium <user_id></code> – Grant premium status\n"
+        "• <code>/remove_premium <user_id></code> – Revoke premium status\n"
+        "• <code>/premium_list</code> – List premium users"
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+# Amaç: Admin paneli ile kullanıcıyı admin yapar
+async def make_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_admin(user_id):
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /make_admin <user_id>")
+        return
+    target_user_id = int(context.args[0])
+    admin_users = load_admin_users()
+    if target_user_id not in admin_users:
+        admin_users.add(target_user_id)
+        save_admin_users(admin_users)
+        await update.message.reply_text(f"✅ User {target_user_id} has been made an admin.")
+    else:
+        await update.message.reply_text(f"⚠️ User {target_user_id} is already an admin.")
+
+# Amaç: Admin paneli ile kullanıcının admin statüsünü kaldırır
+async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_admin(user_id):
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /remove_admin <user_id>")
+        return
+    target_user_id = int(context.args[0])
+    admin_users = load_admin_users()
+    if target_user_id in admin_users:
+        admin_users.remove(target_user_id)
+        save_admin_users(admin_users)
+        await update.message.reply_text(f"✅ Admin status removed from user {target_user_id}.")
+    else:
+        await update.message.reply_text(f"⚠️ User {target_user_id} is not an admin.")
+
+# Amaç: Admin paneli ile kullanıcıyı premium yapar
+async def make_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_admin(user_id):
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /make_premium <user_id>")
+        return
+    target_user_id = int(context.args[0])
+    premium_users = load_premium_users()
+    if target_user_id not in premium_users:
+        premium_users.add(target_user_id)
+        save_premium_users(premium_users)
+        await update.message.reply_text(f"✅ User {target_user_id} has been made a Premium user.")
+    else:
+        await update.message.reply_text(f"⚠️ User {target_user_id} is already a Premium user.")
+
+# Amaç: Admin paneli ile kullanıcının premium statüsünü kaldırır
+async def remove_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_admin(user_id):
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /remove_premium <user_id>")
+        return
+    target_user_id = int(context.args[0])
+    premium_users = load_premium_users()
+    if target_user_id in premium_users:
+        premium_users.remove(target_user_id)
+        save_premium_users(premium_users)
+        await update.message.reply_text(f"✅ Premium status removed from user {target_user_id}.")
+    else:
+        await update.message.reply_text(f"⚠️ User {target_user_id} is not a Premium user.")
+
+# Amaç: Admin gerektiren fonksiyonlar için dekoratör sağlar
+def admin_required(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        if not check_admin(user_id):
+            await update.message.reply_text("❌ You do not have admin privileges.")
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+# Amaç: Kullanıcı sayısını ve istatistikleri gösterir
+@admin_required
+async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        with open("data/users.json", "r") as f:
+            users_data = json.load(f)
+
+        total = len(users_data)
+        premium = sum(1 for u in users_data.values() if u.get("is_premium"))
+        admins = sum(1 for u in users_data.values() if u.get("is_admin"))
+
+        msg = (
+            f"👥 <b>Total Users:</b> {total}\n"
+            f"💎 <b>Premium Users:</b> {premium}\n"
+            f"🛡️ <b>Admins:</b> {admins}"
+        )
+        await update.message.reply_text(msg, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/users error: {e}")
+        await update.message.reply_text("❌ Failed to load user data.")
+
+# User management
+USERS_FILE = "data/users.json"
+
+# Amaç: Kullanıcı verilerini data/users.json dosyasından yükler
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
+    with open(USERS_FILE, "r") as f:
+        return json.load(f)
+
+# Amaç: Yeni kullanıcıyı data/users.json dosyasına kaydeder
+def save_user(user_id: int):
+    users = load_users()
+    if str(user_id) not in users:
+        users[str(user_id)] = {}
+        os.makedirs("data", exist_ok=True)
+        with open(USERS_FILE, "w") as f:
+            json.dump(users, f, indent=2)
+
+# Amaç: JSON dosyasından veri yükler
+def load_json(file_path):
+    os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+    if not os.path.exists(file_path):
+        return {}
+    with open(file_path, "r") as f:
+        return json.load(f)
+
+# Amaç: JSON dosyasını kaydeder
+def save_json(file_path, data):
+    os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+    with open(file_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+# Amaç: Kullanıcı bilgilerini gösterir
+@admin_required
+async def user_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Please provide a user ID. Usage: /user_info <user_id>")
+        return
+
+    user_id = context.args[0]
+    users = load_json("data/users.json")
+
+    if user_id not in users:
+        await update.message.reply_text("❌ User not found.")
+        return
+
+    user_data = users[user_id]
+    premium = "✅ Yes" if user_data.get("premium") else "❌ No"
+    admin = "✅ Yes" if user_data.get("admin") else "❌ No"
+    created_at = user_data.get("created_at", "N/A")
+    last_active = user_data.get("last_active", "N/A")
+
+    msg = (
+        f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+        f"💎 <b>Premium:</b> {premium}\n"
+        f"🛠 <b>Admin:</b> {admin}\n"
+        f"📆 <b>Joined:</b> {created_at}\n"
+        f"🕒 <b>Last Active:</b> {last_active}"
+    )
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+# Amaç: Kullanıcı meta verilerini günceller
+def update_user_metadata(user_id):
+    users = load_json("data/users.json")
+    now = datetime.utcnow().isoformat()
+
+    if user_id not in users:
+        users[user_id] = {
+            "premium": False,
+            "admin": False,
+            "created_at": now
+        }
+
+    users[user_id]["last_active"] = now
+    save_json("data/users.json", users)
+
+# Amaç: Yaygın mesaj gönderir
+@admin_required
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("📢 Please provide a message to broadcast:\n\nUsage:\n`/broadcast Your message here`", parse_mode="Markdown")
+        return
+
+    message_text = "📢 Broadcast:\n" + " ".join(context.args)
+
+    try:
+        user_data = load_users()
+    except FileNotFoundError:
+        await update.message.reply_text("⚠️ No users found.")
+        return
+
+    count = 0
+    for user_id in user_data.keys():
+        try:
+            await context.bot.send_message(chat_id=int(user_id), text=message_text)
+            count += 1
+        except Exception as e:
+            logger.warning(f"Failed to send message to {user_id}: {e}")
+
+    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
+
+# Amaç: Kullanıcı kabul şartlarını kabul eder
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -909,7 +1147,7 @@ async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await query.edit_message_text("✅ Terms accepted. You can start using commands.")
 
-# Fonksiyon: Geri bildirimleri işler
+# Amaç: Geri bildirimleri işler
 async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -946,8 +1184,7 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("✅ Thank you for your feedback!")
 
-
-# Fonksiyon: AI sinyallerini gönderir ve geri bildirim butonları ekler
+# Amaç: AI sinyallerini gönderir ve geri bildirim butonları ekler
 async def send_ai_signal(update: Update, context: ContextTypes.DEFAULT_TYPE, signal_text: str):
     try:
         logger.info(f"send_ai_signal: Preparing to send message for chat {update.effective_chat.id} with feedback buttons")
@@ -962,7 +1199,7 @@ async def send_ai_signal(update: Update, context: ContextTypes.DEFAULT_TYPE, sig
         if update.message:
             await update.message.reply_text("❌ Failed to send AI signal with feedback buttons. Please try again.")
 
-# Fonksiyon: Haberleri otomatik gönderir
+# Amaç: Haberleri otomatik gönderir
 async def check_and_send_news(app):
     while True:
         news_data = await fetch_newsapi_news()
@@ -979,14 +1216,41 @@ async def check_and_send_news(app):
                         save_sent_urls()
                     except Exception as e:
                         logger.error(f"⚠️ News sending failed: {e}")
-        await asyncio.sleep(7200)
+        await asyncio.sleep(2700)
 
-# Fonksiyon: Coin verilerini çeker
+# Amaç: Coin verilerini çeker
 async def fetch_coin_data(symbol):
     price = await fetch_price(symbol)
     return {"symbol": f"{symbol.upper()}USDT", "price": price} if price is not None else None
 
-# Fonksiyon: Botu çalıştırır
+# Amaç: Premium kullanıcı listesini gösterir
+@admin_required
+async def premium_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = load_premium_users()
+    now = datetime.utcnow()
+    lines = []
+    for user_id in data:
+        lines.append(f"👤 {user_id} – ✅ Active")  # Senin kodunda süre bilgisi yok, bu yüzden sadece aktif olarak gösteriliyor
+
+    msg = "<b>💎 Premium Users</b>\n\n" + "\n".join(lines)
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+# Amaç: Premium sürelerini kontrol eder ve bildirim gönderir
+async def check_premium_expiry(bot: Bot):
+    data = load_premium_users()
+    now = datetime.utcnow()
+
+    for user_id in data:
+        # Not: Senin kodunda süre bilgisi saklanmıyor, bu yüzden bu kontrol devre dışı bırakıldı
+        pass  # Şu an için süre kontrolü yapılamıyor, sadece kullanıcı listesi var
+
+# Amaç: Arka planda premium süre kontrolünü çalıştırır
+async def background_tasks(bot: Bot):
+    while True:
+        await check_premium_expiry(bot)
+        await asyncio.sleep(3600)  # Her saat kontrol et
+
+# Amaç: Botu çalıştırır
 async def run_bot():
     logger.info("🚀 Bot starting...")
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1009,12 +1273,22 @@ async def run_bot():
     app.add_handler(CommandHandler("bt", bt))
     app.add_handler(CommandHandler("prem", prem))
     app.add_handler(CommandHandler("activate_premium", activate_premium))
+    app.add_handler(CommandHandler("admin_panel", admin_panel))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("user_info", user_info))
+    app.add_handler(CommandHandler("make_admin", make_admin))
+    app.add_handler(CommandHandler("remove_admin", remove_admin))
+    app.add_handler(CommandHandler("make_premium", make_premium))
+    app.add_handler(CommandHandler("remove_premium", remove_premium))
+    app.add_handler(CommandHandler("users", users))
+    app.add_handler(CommandHandler("premium_list", premium_list))  # Yeni komut eklendi
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CallbackQueryHandler(feedback_handler))
     app.add_handler(CommandHandler("ai", ai_comment))
     app.add_error_handler(error_handler)
     asyncio.create_task(check_alerts(app))
     asyncio.create_task(check_and_send_news(app))
+    asyncio.create_task(background_tasks(app.bot))  # Arka plan görevi eklendi
     logger.info("🔄 Background tasks started.")
     await app.initialize()
     await app.start()
