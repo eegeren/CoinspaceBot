@@ -484,7 +484,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📖 View Commands (/help)", callback_data="help")]])
         msg = (
-            "👋 Welcome back to Coinspace Bot\\!\n\n"
+            f"👋 Welcome back to Coinspace Bot\\!\n\n"
+            f"🚀 Your User ID: `{user_id}`\n\n"
             "🚀 Get daily AI\\-supported trading signals, price alerts, portfolio tracking, and live market updates\\.\n\n"
             "🔐 Upgrade to Premium:\n"
             "• Unlimited AI Leverage Signals \\(Free users get only 2 signals per day\\)\n"
@@ -498,11 +499,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "[1 Month Payment](https://nowpayments.io/payment/?iid\\=5260731771)\n"
             "[3 Months Payment](https://nowpayments.io/payment/?iid\\=4400895826)\n"
             "[1 Year Payment](https://nowpayments.io/payment/?iid\\=4501340550)\n\n"
-            "✅ Activate your subscription with the ⁠/prem⁠ command\\.\n\n"
+            "✅ After payment, activate your subscription with the /activate_premium command.\n\n"
             "Click the button below to view available commands: /help"
         )
         await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="MarkdownV2", disable_web_page_preview=True)
-
 # Fonksiyon: Hata işleyicisi
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}")
@@ -535,19 +535,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "🧹 `/clr` — Clear portfolio\n"
     "📊 `/port` — View portfolio\n"
     "📈 `/perf` — View performance\n"
-    "📉 `/gr` — Portfolio graph\n\n"
+    "📉 `/gr` — Portfolio graph (Premium Only)\n\n"
 
     "*📌 Market Tools*\n"
     "💰 `/pr BTC` — Price info\n"
-    "⏰ `/alert BTC 70K` — Price alert\n"
+    "⏰ `/alert BTC 70K` — Price alert (Premium Only)\n"
     "🧠 `/ai BTC` — AI comment (Premium Only)\n"
-    "🧪 `/bt BTC` — Backtest\n"
+    "🧪 `/bt BTC` — Backtest (Premium Only)\n"
     "⚙️ `/lev` — Leverage signal\n\n"
 
     "*📰 News & Premium*\n"
     "🗞 `/nw` — News\n"
     "🔗 `/rmore` — Links\n"
-    "💎 `/prem` — Premium"
+    "💎 `/prem` — Premium\n"
+    "🔑 `/activate_premium` — Activate Premium (after payment)"
 )
 
     try:
@@ -656,6 +657,9 @@ async def clr(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Fonksiyon: Portföy grafiğini oluşturur
 async def gr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not check_premium_status(user_id):
+        await update.message.reply_text("❌ This command (/gr) is only available for Premium users. Upgrade via /prem.")
+        return
     holdings = get_portfolio(user_id)
     if not holdings:
         await update.message.reply_text("📭 Portfolio is empty. Add a coin with /add first.")
@@ -743,6 +747,9 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid coin symbol.")
         return
     user_id = update.effective_user.id
+    if not check_premium_status(user_id):
+        await update.message.reply_text("❌ This command (/alert) is only available for Premium users. Upgrade via /prem.")
+        return
     add_alert(user_id, symbol, target_price)
     await update.message.reply_text(f"🔔 Alert set for {symbol} at ${target_price}.")
 
@@ -827,6 +834,10 @@ async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if symbol not in symbol_to_id_map:
         await update.message.reply_text("❌ Coin not found.")
         return
+    user_id = update.effective_user.id
+    if not check_premium_status(user_id):
+        await update.message.reply_text("❌ This command (/bt) is only available for Premium users. Upgrade via /prem.")
+        return
     df, _, _ = await fetch_ohlc_data(symbol, days=30)
     if df is None or df.empty:
         await update.message.reply_text("❌ Data not available.")
@@ -869,9 +880,25 @@ async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <a href='https://nowpayments.io/payment/?iid=5260731771'>1 Month Payment</a>\n"
         "• <a href='https://nowpayments.io/payment/?iid=4400895826'>3 Months Payment</a>\n"
         "• <a href='https://nowpayments.io/payment/?iid=4501340550'>1 Year Payment</a>\n\n"
-        "✅ After payment, activate your subscription with the bot owner."
+        "✅ After payment, activate your subscription with the /activate_premium command."
     )
     await update.message.reply_text(msg, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
+
+# Fonksiyon: Premium abonelik aktivasyonu sağlar (simüle edilmiş)
+async def activate_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /activate_premium <payment_id> (e.g., /activate_premium 5260731771)")
+        return
+    payment_id = context.args[0]
+    user_id = update.effective_user.id
+    # Simüle edilmiş kontrol (gerçekte ödeme doğrulama API ile yapılmalı)
+    valid_payments = {"5260731771", "4400895826", "4501340550"}  # Örnek ödeme ID'leri
+    if payment_id in valid_payments:
+        premium_users.add(user_id)
+        save_premium_users(premium_users)
+        await update.message.reply_text("✅ Your Premium subscription has been activated successfully!")
+    else:
+        await update.message.reply_text("❌ Invalid payment ID. Please contact the bot owner for assistance.")
 
 # Fonksiyon: Kullanıcı kabul şartlarını kabul eder
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -981,6 +1008,7 @@ async def run_bot():
     app.add_handler(CommandHandler("rmore", rmore))
     app.add_handler(CommandHandler("bt", bt))
     app.add_handler(CommandHandler("prem", prem))
+    app.add_handler(CommandHandler("activate_premium", activate_premium))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CallbackQueryHandler(feedback_handler))
     app.add_handler(CommandHandler("ai", ai_comment))
