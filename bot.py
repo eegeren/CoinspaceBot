@@ -68,6 +68,26 @@ async def check_user_accepted(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 accepted_users = load_accepted_users()
 
+# Premium users
+# Fonksiyon: Premium kullanıcıları yükler (premium_users.json dosyasından, simüle edilmiş)
+def load_premium_users():
+    if not os.path.exists("premium_users.json"):
+        return set()
+    with open("premium_users.json", "r") as f:
+        try:
+            return set(json.load(f))
+        except json.JSONDecodeError:
+            return set()
+
+# Fonksiyon: Premium kullanıcıları kaydeder (premium_users.json dosyasına)
+def save_premium_users(users):
+    with open("premium_users.json", "w") as f:
+        json.dump(list(users), f)
+
+# Fonksiyon: Kullanıcının premium olup olmadığını kontrol eder
+def check_premium_status(user_id):
+    return user_id in load_premium_users()
+
 # News and signal files
 SENT_NEWS_FILE = "sent_news.json"
 if os.path.exists(SENT_NEWS_FILE):
@@ -389,6 +409,10 @@ async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = text.replace("/ai", "").strip().upper()
     logger.info(f"ai_comment: Received command for symbol {symbol} from user {update.effective_user.id}")
+    user_id = update.effective_user.id
+    if not check_premium_status(user_id):
+        await update.message.reply_text("❌ This command (/ai) is only available for Premium users. Upgrade via /prem.")
+        return
     if not symbol or symbol not in symbol_to_id_map:
         logger.warning(f"ai_comment: Invalid symbol {symbol} for user {update.effective_user.id}")
         await update.message.reply_text("❌ Invalid coin symbol. Please use a valid coin traded on Binance (e.g., /ai BTC, /ai ETH, /ai SOL, /ai BNB, /ai ADA, /ai XRP, /ai DOT, /ai LINK).")
@@ -438,6 +462,10 @@ def get_all_alerts():
 
 # Fonksiyon: Uyarıyı siler (simüle edilmiş)
 def delete_alert(user_id, symbol):
+    return True  # Simulated
+
+# Fonksiyon: Fiyat uyarı ekler (simüle edilmiş)
+def add_alert(user_id, symbol, target_price):
     return True  # Simulated
 
 # Commands
@@ -512,7 +540,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "*📌 Market Tools*\n"
     "💰 `/pr BTC` — Price info\n"
     "⏰ `/alert BTC 70K` — Price alert\n"
-    "🧠 `/ai BTC` — AI comment\n"
+    "🧠 `/ai BTC` — AI comment (Premium Only)\n"
     "🧪 `/bt BTC` — Backtest\n"
     "⚙️ `/lev` — Leverage signal\n\n"
 
@@ -606,7 +634,7 @@ async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper()
     try:
         amount = float(context.args[1])
-    except ValueValueError:
+    except ValueError:
         await update.message.reply_text("❌ Invalid amount.")
         return
     user_id = update.effective_user.id
@@ -800,7 +828,7 @@ async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Coin not found.")
         return
     df, _, _ = await fetch_ohlc_data(symbol, days=30)
-    if df is none or df.empty:
+    if df is None or df.empty:
         await update.message.reply_text("❌ Data not available.")
         return
     from ta.momentum import RSIIndicator
@@ -841,10 +869,9 @@ async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <a href='https://nowpayments.io/payment/?iid=5260731771'>1 Month Payment</a>\n"
         "• <a href='https://nowpayments.io/payment/?iid=4400895826'>3 Months Payment</a>\n"
         "• <a href='https://nowpayments.io/payment/?iid=4501340550'>1 Year Payment</a>\n\n"
-        "✅ After payment, activate your subscription using the <code>/prem</code> command."
+        "✅ After payment, activate your subscription with the bot owner."
     )
     await update.message.reply_text(msg, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
-
 
 # Fonksiyon: Kullanıcı kabul şartlarını kabul eder
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
