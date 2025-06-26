@@ -750,19 +750,23 @@ async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🟣 1 Year – $399.99", url="https://nowpayments.io/payment/?iid=4501340550")],
     ])
     msg = (
-        "✨ *Upgrade to Coinspace Premium!*\n\n"
-        "🚀 Benefits:\n"
-        "• Up to 10 AI-based trading signals per day\n"
-        "• Leverage trading suggestions\n"
-        "• Priority market alerts and news\n"
-        "• Portfolio analysis tools\n\n"
-        "💰 *Pricing:*\n"
-        "1 Month: $29.99\n"
-        "3 Months: $69.99\n"
-        "1 Year: $399.99\n\n"
-        "_Secure payment via USDT (TRC20) through NOWPayments._"
-    )
-    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="MarkdownV2")
+    "👑 *Coinspace Premium Planları\\!*\n\n"
+    "⚡️ *Avantajlar:*\n"
+    "• Sınırsız kaldıraçlı AI sinyali \\(ücretsiz kullanıcılar günde sadece 2 alır\\)\n"
+    "• Tüm piyasa verilerine erişim\n"
+    "• Öncelikli destek & erken erişim özellikleri\n\n"
+    "*💳 Planlar:*\n"
+    "• 1 Ay: \\$29\\.99\n"
+    "• 3 Ay: \\$69\\.99\n"
+    "• 1 Yıl: \\$399\\.99\n\n"
+    "👉 *Yükseltmek için bir plan seçin ve ödeme yapın:*\n"
+    "\\[1 Aylık Ödeme\\]\\(https://nowpayments\\.io/payment/?iid=5260731771\\)\n"
+    "\\[3 Aylık Ödeme\\]\\(https://nowpayments\\.io/payment/?iid=4400895826\\)\n"
+    "\\[1 Yıllık Ödeme\\]\\(https://nowpayments\\.io/payment/?iid=4501340550\\)\n\n"
+    "✅ Ödemenin ardından `/prem` komutu ile aboneliğini aktif et\\."
+)
+    await update.message.reply_text(msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+
 
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
