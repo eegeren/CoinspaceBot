@@ -3,10 +3,6 @@ import asyncio
 import aiohttp
 from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
-from portfolio_db import add_coin, get_portfolio, remove_coin, update_coin, clear_portfolio
-from alert_db import add_alert, get_all_alerts, delete_alert
-from telegram.constants import ParseMode
-from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 import io
 import json
@@ -18,26 +14,39 @@ import requests
 import numpy as np
 from urllib.parse import urlparse, urlunparse
 import hashlib
+import logging
+from dotenv import load_dotenv
 
-# Ortam değişkenlerini yükle
+# Logging configuration
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TOKEN = os.getenv("BOT_TOKEN", "dummy_token")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "dummy_api_key")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "dummy_openai_key")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "506d562e0d4a434c97df2e3a51e4cd1c")
 
-# OpenAI istemcisi
+# OpenAI client
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# Modeli global olarak yükle
+# Load models globally
 model = None
+tp_model = None
+sl_model = None
 try:
     model_path = os.path.abspath("model.pkl")
     model = joblib.load(model_path)
-    print(f"✅ Model yüklendi: {model_path}")
+    logger.info(f"✅ Model loaded: {model_path}")
+    tp_model = joblib.load("tp_model.pkl")
+    sl_model = joblib.load("sl_model.pkl")
+    logger.info(f"✅ TP/SL models loaded")
 except Exception as e:
-    print(f"❌ Model yüklenemedi: {e}")
+    logger.error(f"❌ Model loading failed: {e}")
 
-# Kabul edilen kullanıcılar
+# Accepted users
 def load_accepted_users():
     if not os.path.exists("accepted_users.json"):
         return set()
@@ -51,9 +60,12 @@ def save_accepted_users(users):
     with open("accepted_users.json", "w") as f:
         json.dump(list(users), f)
 
+async def check_user_accepted(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    return update.effective_user.id in load_accepted_users()
+
 accepted_users = load_accepted_users()
 
-# Haber dosyası
+# News and signal files
 SENT_NEWS_FILE = "sent_news.json"
 if os.path.exists(SENT_NEWS_FILE):
     with open(SENT_NEWS_FILE, "r") as f:
@@ -64,7 +76,6 @@ if os.path.exists(SENT_NEWS_FILE):
 else:
     sent_news_urls = set()
 
-# Sinyal dosyası
 SIGNAL_FILE = "signals.json"
 
 def load_signals():
@@ -80,22 +91,23 @@ def save_signals(data):
     with open(SIGNAL_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# Coin sembol haritası
+# Coin symbol map
 symbol_to_id_map = {}
 
 async def load_symbol_map():
     global symbol_to_id_map
-    url = "https://api.coingecko.com/api/v3/coins/list"
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY} if BINANCE_API_KEY != "dummy_api_key" else {}
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            print(f"CoinGecko status: {response.status}")
+        async with session.get(url, headers=headers) as response:
             if response.status == 200:
-                coins = await response.json()
-                symbol_to_id_map.update({coin["symbol"].upper(): coin["id"] for coin in coins})
+                data = await response.json()
+                symbol_to_id_map.update({symbol["symbol"].replace("USDT", "").upper(): symbol["symbol"] for symbol in data["symbols"] if symbol["status"] == "TRADING" and symbol["symbol"].endswith("USDT")})
+                logger.info(f"✅ Coin symbols loaded.")
             else:
-                print("❌ Coin listesi alınamadı.")
+                logger.error(f"❌ Failed to fetch coin list: status={response.status}")
 
-# Yardımcı fonksiyonlar
+# Helper functions
 def normalize_url(raw_url):
     if not raw_url:
         return ""
@@ -111,59 +123,73 @@ def get_news_key(url, title):
     key_base = f"{norm_url}|{title.strip().lower()}"
     return hashlib.md5(key_base.encode()).hexdigest()
 
-# Fiyat alma
-async def fetch_price(coin_id: str):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+# Fetch price
+async def fetch_price(symbol: str):
+    full_symbol = symbol_to_id_map.get(symbol.upper(), f"{symbol.upper()}USDT")
+    url = "https://api.binance.com/api/v3/ticker/price"
+    params = {"symbol": full_symbol}
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY} if BINANCE_API_KEY != "dummy_api_key" else {}
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
+        async with session.get(url, headers=headers, params=params) as response:
             if response.status == 200:
                 data = await response.json()
-                return data.get(coin_id, {}).get("usd")
+                return float(data["price"])
+            logger.error(f"❌ Failed to fetch price for {full_symbol}: status={response.status}")
             return None
 
-# Price komutu
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Price command
+async def pr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Lütfen bir coin gir: /price BTC")
+        await update.message.reply_text("Please enter a coin: /pr BTC")
         return
-
     symbol = context.args[0].upper()
-    coin_id = symbol_to_id_map.get(symbol)
-    if not coin_id:
-        await update.message.reply_text(f"❌ {symbol} için eşleşme bulunamadı.")
+    if symbol not in symbol_to_id_map:
+        await update.message.reply_text(f"❌ No match found for {symbol}.")
         return
-
-    price_value = await fetch_price(coin_id)
-    if price_value is not None:
-        await update.message.reply_text(f"{symbol} fiyatı: ${price_value:.2f}")
+    price = await fetch_price(symbol)
+    if price is not None:
+        await update.message.reply_text(f"{symbol} price: ${price:.2f}")
     else:
-        await update.message.reply_text(f"❌ {symbol} için fiyat alınamadı.")
+        await update.message.reply_text(f"❌ Failed to retrieve price for {symbol}.")
 
-# OHLC veri alma
-async def fetch_ohlc_data(coin_id, days=7):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
+# Fetch OHLC data
+async def fetch_ohlc_data(symbol: str, days=7):
+    full_symbol = symbol_to_id_map.get(symbol.upper(), f"{symbol.upper()}USDT")
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": full_symbol, "interval": "1h", "limit": days * 24}
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY} if BINANCE_API_KEY != "dummy_api_key" else {}
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
+        async with session.get(url, headers=headers, params=params) as response:
             if response.status == 200:
                 data = await response.json()
-                prices = data.get("prices", [])
-                df = pd.DataFrame(prices, columns=["timestamp", "price"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                df.set_index("timestamp", inplace=True)
-                return df
-            return None
+                if not data or not isinstance(data, list) or len(data) == 0:
+                    logger.error(f"❌ Empty or invalid OHLC data for {full_symbol}")
+                    return None, 0.0, 0.0
+                try:
+                    prices = [float(item[4]) for item in data]
+                    timestamps = [int(item[0]) for item in data]
+                    df = pd.DataFrame({"price": prices}, index=pd.to_datetime(timestamps, unit="ms"))
+                    if df.empty or not isinstance(df, pd.DataFrame) or len(df) < 26:
+                        logger.error(f"❌ Invalid or insufficient data for {full_symbol}")
+                        return None, 0.0, 0.0
+                    change_24h = ((df["price"].iloc[-1] - df["price"].iloc[-24]) / df["price"].iloc[-24]) * 100 if len(df) >= 24 else 0.0
+                    change_7d = ((df["price"].iloc[-1] - df["price"].iloc[0]) / df["price"].iloc[0]) * 100
+                    return df, change_24h, change_7d
+                except (ValueError, IndexError) as e:
+                    logger.error(f"❌ Error processing OHLC data for {full_symbol}: {e}")
+                    return None, 0.0, 0.0
+            logger.error(f"❌ Failed to fetch OHLC data for {full_symbol}: status={response.status}")
+            return None, 0.0, 0.0
 
-# Teknik göstergeler
+# Technical indicators
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return None
     gains, losses = [], []
     for i in range(1, period + 1):
         delta = prices[-i] - prices[-i - 1]
-        if delta > 0:
-            gains.append(delta)
-        else:
-            losses.append(abs(delta))
+        gains.append(max(0, delta))
+        losses.append(max(0, -delta))
     avg_gain = sum(gains) / period
     avg_loss = sum(losses) / period if losses else 0.001
     rs = avg_gain / avg_loss
@@ -186,153 +212,141 @@ def calculate_macd(prices):
         return None, None
     ema12 = exponential_moving_average(prices, 12)
     ema26 = exponential_moving_average(prices, 26)
-    macd_line = [a - b for a, b in zip(ema12[-len(ema26):], ema26)]
+    if ema12 is None or ema26 is None:
+        return None, None
+    min_len = min(len(ema12), len(ema26))
+    ema12 = ema12[-min_len:]
+    ema26 = ema26[-min_len:]
+    macd_line = [a - b for a, b in zip(ema12, ema26)]
     signal_line = exponential_moving_average(macd_line, 9)
-    return round(macd_line[-1], 2), round(signal_line[-1], 2)
+    return round(macd_line[-1], 2), round(signal_line[-1], 2) if signal_line else 0.0
 
-def calculate_technical_indicators(ohlc_data):
-    closes = [item[4] for item in ohlc_data]
-    if len(closes) < 26:
-        return None
-    rsi = calculate_rsi(closes)
-    macd, signal = calculate_macd(closes)
-    ma5 = sum(closes[-5:]) / 5
-    ma20 = sum(closes[-20:]) / 20
-    return {
-        "RSI": rsi,
-        "MACD": macd,
-        "Signal": signal,
-        "MA_5": ma5,
-        "MA_20": ma20
-    }
-
-# Model tahmini
+# Model predictions
 def predict_signal(features_df):
+    global model
     if not model:
-        print("❌ Model yüklü değil!")
+        logger.error("❌ Model not loaded!")
         return None
-    print(f"Özellik şekli: {features_df.shape}, türü: {type(features_df)}")
-    print(f"Özellik sütunları: {features_df.columns}")
-    print(f"Özellik verisi:\n{features_df}")
     try:
         prediction = model.predict(features_df)
-        return prediction[0]
+        return int(prediction[0])
     except Exception as e:
-        print(f"❌ Tahmin hatası: {e}")
+        logger.error(f"❌ Prediction error: {e}")
         return None
 
-import joblib
-
-# SL ve TP modellerini yükle
-tp_model = None
-sl_model = None
-try:
-    tp_model = joblib.load("tp_model.pkl")
-    sl_model = joblib.load("sl_model.pkl")
-except Exception as e:
-    print("TP/SL modelleri yüklenemedi:", e)
-
-    import joblib
-
-# TP tahmin fonksiyonu
 def predict_tp(features):
+    global tp_model
+    if not tp_model:
+        logger.error("❌ TP model not loaded!")
+        return None
     try:
-        model = joblib.load("tp_model.pkl")
-        return model.predict(features)[0]
+        return tp_model.predict(features)[0]
     except Exception as e:
-        print("TP tahmin hatası:", e)
+        logger.error(f"❌ TP prediction error: {e}")
         return None
 
-# SL tahmin fonksiyonu
 def predict_sl(features):
+    global sl_model
+    if not sl_model:
+        logger.error("❌ SL model not loaded!")
+        return None
     try:
-        model = joblib.load("sl_model.pkl")
-        return model.predict(features)[0]
+        return sl_model.predict(features)[0]
     except Exception as e:
-        print("SL tahmin hatası:", e)
+        logger.error(f"❌ SL prediction error: {e}")
         return None
 
-
+# Generate AI comment
 async def generate_ai_comment(coin_data):
-    name = coin_data["name"]
-    price = coin_data["market_data"]["current_price"]["usd"]
-    change_24h = coin_data["market_data"]["price_change_percentage_24h"]
-    change_7d = coin_data["market_data"]["price_change_percentage_7d"]
-    coin_id = coin_data["id"]
-
-    df = await fetch_ohlc_data(coin_id)
-    if df is None or df.empty:
-        return f"{name} için veri alınamadı."
+    name = coin_data["symbol"].replace("USDT", "")
+    price = coin_data["price"]
+    df, change_24h, change_7d = await fetch_ohlc_data(name)
+    if df is None or df.empty or not isinstance(df, pd.DataFrame):
+        logger.error(f"❌ Invalid data for {name}")
+        return f"❌ Data unavailable for {name}. Please try again later."
 
     closes = df["price"].values
-    if len(closes) < 26:
-        return f"{name} için yeterli veri yok."
+    if not isinstance(closes, np.ndarray) or len(closes) < 26:
+        logger.error(f"❌ Insufficient data for {name}")
+        return f"❌ Insufficient data for {name}. More historical data required."
 
-    # Göstergeleri hesapla
     rsi = calculate_rsi(closes)
     macd, signal = calculate_macd(closes)
     ma_5 = sum(closes[-5:]) / 5
     ma_20 = sum(closes[-20:]) / 20
+    volatility = df["price"].rolling(window=10).std().iloc[-1]
+    momentum = df["price"].iloc[-1] - df["price"].shift(10).iloc[-1]
+    price_change = df["price"].pct_change().iloc[-1]
+    volume_change = df["price"].rolling(window=1).mean().pct_change().iloc[-1]
 
     features = pd.DataFrame([{
-        "RSI": rsi,
-        "MACD": macd,
-        "Signal": signal,
+        "RSI": rsi if rsi is not None else 50.0,
+        "MACD": macd if macd is not None else 0.0,
+        "Signal": signal if signal is not None else 0.0,
         "MA_5": ma_5,
-        "MA_20": ma_20
+        "MA_20": ma_20,
+        "Volatility": volatility if not np.isnan(volatility) else 0.0,
+        "Momentum": momentum if not np.isnan(momentum) else 0.0,
+        "Price_Change": price_change if not np.isnan(price_change) else 0.0,
+        "Volume_Change": volume_change if not np.isnan(volume_change) else 0.0
     }])
 
     prediction = predict_signal(features)
-    tp = predict_tp(features)
-    sl = predict_sl(features)
+    tp_raw = predict_tp(features) if predict_tp(features) is not None else 1.0
+    sl_raw = predict_sl(features) if predict_sl(features) is not None else 2.0
 
-    # Yorum oluşturma
+    tp = None
+    sl = None
+    try:
+        if prediction == 1:
+            tp = price * (1 + max(0.01, tp_raw / 100))
+            sl = price * (1 - max(0.02, sl_raw / 100))
+        elif prediction == 0:
+            tp = price * (1 - max(0.01, tp_raw / 100))
+            sl = price * (1 + max(0.02, sl_raw / 100))
+
+        min_tp_sl_diff = price * 0.02
+        if tp and sl:
+            if prediction == 0 and tp >= sl:
+                tp = max(price - min_tp_sl_diff, price * 0.9)
+            elif prediction == 1 and tp <= sl:
+                tp = min(price + min_tp_sl_diff, price * 1.1)
+            if abs(tp - sl) < min_tp_sl_diff:
+                sl = tp + min_tp_sl_diff if prediction == 0 else tp - min_tp_sl_diff
+    except Exception as e:
+        logger.error(f"❌ Error calculating TP/SL: {e}")
+        return f"❌ Error calculating TP/SL: {str(e)}"
+
     def generate_natural_comment():
-        # RSI Yorumu
         if rsi < 30:
-            rsi_c = "RSI aşırı satım bölgesinde, yükseliş potansiyeli olabilir."
+            rsi_c = "RSI is in oversold territory, indicating potential upside."
         elif rsi > 70:
-            rsi_c = "RSI aşırı alımda, düzeltme riski taşıyor."
+            rsi_c = "RSI is in overbought territory, indicating a correction risk."
         else:
-            rsi_c = "RSI dengede, kararsız bir seyir var."
+            rsi_c = "RSI is balanced, showing a neutral trend."
 
-        # MACD Yorumu
         if macd > signal:
-            macd_c = "MACD sinyalin üzerinde, momentum pozitif."
+            macd_c = "MACD is above the signal line, indicating positive momentum."
         elif macd < signal:
-            macd_c = "MACD sinyalin altında, zayıf seyir gözleniyor."
+            macd_c = "MACD is below the signal line, indicating a weak trend."
         else:
-            macd_c = "MACD sinyale çok yakın, yön belirsiz."
+            macd_c = "MACD is close to the signal line, direction unclear."
 
-        # MA Yorumu
         if ma_5 > ma_20:
-            trend_c = "Kısa vadeli ortalama yukarıda, pozitif trend mümkün."
+            trend_c = "Short-term MA is above, suggesting a potential bullish trend."
         else:
-            trend_c = "Kısa vadeli ortalama aşağıda, düşüş baskısı sürebilir."
+            trend_c = "Short-term MA is below, indicating bearish pressure."
 
         return f"{rsi_c} {macd_c} {trend_c}"
 
     short_comment = generate_natural_comment()
+    ai_signal = "⚠️ AI prediction failed." if prediction is None else ("📈 BUY" if prediction == 1 else "📉 SELL")
+    tp_text = f"🎯 TP: ${tp:.2f}" if tp else "❌ TP prediction failed."
+    sl_text = f"🛑 SL: ${sl:.2f}" if sl else "❌ SL prediction failed."
 
-    # AI sinyali
-    ai_signal = "⚠️ AI tahmini başarısız." if prediction is None else ("📈 BUY" if prediction == 1 else "📉 SELL")
+    leverage = "⚠️ Leverage not recommended"
+    risk = "✅ Low Risk" if 30 < rsi < 70 and abs(macd - signal) > 0.05 and tp and sl and abs((tp - sl) / price) < 0.1 and volatility / price < 0.05 else "⚠️ High Risk"
 
-    # SL / TP
-    tp_text = f"🎯 TP: ${tp:.2f}" if tp is not None and tp > 0 else "❌ TP tahmini başarısız."
-    sl_text = f"🛑 SL: ${sl:.2f}" if sl is not None and sl > 0 else "❌ SL tahmini başarısız."
-
-    # Kaldıraç önerisi (geliştirildi)
-    if prediction == 1 and rsi < 65 and ma_5 > ma_20:
-        leverage = "📌 Kaldıraç: 5x Long"
-    elif prediction == 0 and rsi > 35 and ma_5 < ma_20:
-        leverage = "📌 Kaldıraç: 5x Short"
-    else:
-        leverage = "⚠️ Kaldıraçlı işlem önerilmez"
-
-    # Risk seviyesi
-    risk = "✅ Düşük Risk" if 30 < rsi < 70 and abs(macd - signal) > 0.05 else "⚠️ Yüksek Risk"
-
-    # Final çıktı
     comment = (
         f"📊 {name} (${price:.2f})\n"
         f"24h: %{change_24h:.2f} | 7d: %{change_7d:.2f}\n\n"
@@ -341,424 +355,414 @@ async def generate_ai_comment(coin_data):
         f"📈 MA(5): {ma_5:.2f} | MA(20): {ma_20:.2f}\n\n"
         f"{tp_text}\n{sl_text}\n\n"
         f"{leverage}\n{risk}\n\n"
-        f"🧠 AI Yorumu: {short_comment}"
+        f"🧠 AI Comment: {short_comment}"
     )
-
     return comment
 
+# Portfolio and Alert functions
+def get_portfolio(user_id):
+    return {}  # Simulated
 
+def add_coin(user_id, symbol, amount, buy_price=None):
+    return True  # Simulated
 
-async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    symbol = text.replace("/ai_", "")
-    symbol_map = {
-        "btc": "bitcoin",
-        "eth": "ethereum",
-        "sol": "solana"
-    }
-    coin_id = symbol_map.get(symbol)
-    if not coin_id:
-        await update.message.reply_text("❌ Bu coin için yorum mevcut değil.")
-        return
+def remove_coin(user_id, symbol):
+    return True  # Simulated
 
-    await update.message.reply_text("💬 AI yorum hazırlanıyor...")
-    coin_data = await fetch_coin_data(coin_id)
-    if not coin_data:
-        await update.message.reply_text("❌ Coin verisi alınamadı.")
-        return
-    comment = await generate_ai_comment(coin_data)
-    await send_ai_signal(update, context, comment)
+def update_coin(user_id, symbol, amount):
+    return True  # Simulated
 
-# Kaldıraç sinyali
-async def leverage_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        response = requests.get("http://localhost:8000/api/leverage-signal")
-        response.raise_for_status()
-        data = response.json()
-        msg = (
-            f"💹 *AI Kaldıraçlı Sinyal* ({data['pair']} – 5x {data['direction']})\n\n"
-            f"📈 *Giriş:* {data['entry']}\n"
-            f"🎯 *Hedef:* {data['target']}\n"
-            f"🛑 *Stop:* {data['stop']}\n"
-            f"🤖 *Güven:* %{data['confidence']}"
-        )
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    except Exception as e:
-        print(f"❌ leverage_signal hatası: {e}")
-        await update.message.reply_text("❌ Sinyal alınamadı. Daha sonra tekrar deneyin.")
+def clear_portfolio(user_id):
+    return True  # Simulated
 
-# Diğer komutlar
+def get_all_alerts():
+    return []  # Simulated
+
+def delete_alert(user_id, symbol):
+    return True  # Simulated
+
+# Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in accepted_users:
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ I Agree", callback_data="accept_disclaimer")]
-        ])
+    if not await check_user_accepted(update, context):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Understand", callback_data="accept_disclaimer")]])
         disclaimer_text = (
-            "📢 *Sorumluluk Reddi*\n\n"
-            "Coinspace Bot, kripto piyasasında bilinçli kararlar almanıza yardımcı olmak için piyasa içgörüleri ve AI destekli sinyaller sunar. "
-            "Bu sinyaller yalnızca bilgi amaçlıdır ve finansal tavsiye niteliği taşımaz.\n\n"
-            "Botu kullanmaya devam etmek için lütfen bunu anladığınızı onaylayın."
+            "📢 Warning\n\n"
+            "Coinspace Bot provides market insights and AI\\-supported signals to help you make informed decisions in the crypto market\\.\n"
+            "These signals are for informational purposes only and do not constitute financial advice\\.\n\n"
+            "Please confirm to proceed\\."
         )
-        await update.message.reply_text(disclaimer_text, reply_markup=keyboard, parse_mode="Markdown")
+        await update.message.reply_text(disclaimer_text, reply_markup=keyboard, parse_mode="MarkdownV2")
     else:
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📖 View Commands (/help)", callback_data="help")]])
         msg = (
-            "👋 *Coinspace Bot’a tekrar hoş geldiniz!*\n\n"
-            "🚀 Günlük AI destekli ticaret sinyalleri, fiyat uyarıları, portföy takibi ve canlı piyasa güncellemeleri alın.\n\n"
-            "🔐 *Premium’a Yükselt*:\n"
-            "• Sınırsız AI Kaldıraç Sinyalleri (Ücretsiz kullanıcılar günde sadece 2 sinyal alır)\n"
-            "• Tam piyasa özetlerine erişim\n"
-            "• Öncelikli destek ve erken özellik erişimi\n\n"
-            "*💳 Abonelik Planları:*\n"
-            "• 1 Ay: $29.99\n"
-            "• 3 Ay: $69.99\n"
-            "• 1 Yıl: $399.99\n\n"
-            "👉 *Yükseltmek için*, bir plan seçin ve ödemeyi tamamlayın:\n"
-            "[1 Ay Ödeme](https://nowpayments.io/payment/?iid=5260731771)\n"
-            "[3 Ay Ödeme](https://nowpayments.io/payment/?iid=4400895826)\n"
-            "[1 Yıl Ödeme](https://nowpayments.io/payment/?iid=4501340550)\n\n"
-            "Ödeme sonrası /premium komutunu kullanarak aboneliğinizi aktifleştirin."
+            "👋 Welcome back to Coinspace Bot\\!\n\n"
+            "🚀 Get daily AI\\-supported trading signals, price alerts, portfolio tracking, and live market updates\\.\n\n"
+            "🔐 Upgrade to Premium:\n"
+            "• Unlimited AI Leverage Signals \\(Free users get only 2 signals per day\\)\n"
+            "• Full market overview access\n"
+            "• Priority support and early feature access\n\n"
+            "💳 Subscription Plans:\n"
+            "• 1 Month: \\$29\\.99\n"
+            "• 3 Months: \\$69\\.99\n"
+            "• 1 Year: \\$399\\.99\n\n"
+            "👉 To upgrade, select a plan and complete the payment:\n"
+            "[1 Month Payment](https://nowpayments.io/payment/?iid\\=5260731771)\n"
+            "[3 Months Payment](https://nowpayments.io/payment/?iid\\=4400895826)\n"
+            "[1 Year Payment](https://nowpayments.io/payment/?iid\\=4501340550)\n\n"
+            "✅ Activate your subscription with the ⁠/prem⁠ command\\.\n\n"
+            "Click the button below to view available commands: /help"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="MarkdownV2", disable_web_page_preview=True)
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Exception while handling an update: {context.error}")
+    if update and update.message:
+        try:
+            await update.message.reply_text("❌ An error occurred. Please try again or contact support.")
+        except Exception:
+            pass
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "*📚 Coinspace Commands*\n\n"
-        "💰 `/add BTC 0.5 30000` \\- Add a coin to your portfolio\n"
-        "📊 `/portfolio` \\- Show current portfolio\n"
-        "🔁 `/update BTC 1.0` \\- Update coin amount\n"
-        "🗑 `/remove BTC` \\- Remove a coin\n"
-        "🧹 `/clear` \\- Clear your entire portfolio\n"
-        "📈 `/performance` \\- Show portfolio performance\n"
-        "💵 `/price BTC` \\- Get current price of a coin\n"
-        "📉 `/graph` \\- Show your portfolio chart\n"
-        "🔔 `/setalert BTC 70000` \\- Set a price alert\n"
-        "🤖 `/ai_btc` \\- AI market analysis for BTC\n"
-        "📰 `/news` \\- Latest crypto news\n"
-        "🔗 `/readmore` \\- Read full news articles\n"
-        "📈 `/backtest BTC` \\- Backtest trading strategy\n"
-        "💎 `/premium` \\- Premium subscription info\n"
-        "💹 `/leverage_signal` \\- Leverage signal suggestion"
-    )
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    logger.info(f"help_command: Starting, user: {update.effective_user.id}")
+    if not await check_user_accepted(update, context):
+        logger.warning(f"help_command: User {update.effective_user.id} has not accepted terms.")
+        if update.message:
+            await update.message.reply_text("⚠️ Please run /start and accept the terms.")
+        return
 
-async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message and not update.callback_query:
+        logger.error(f"help_command error: No valid update message or callback query for user {update.effective_user.id}")
+        return
+
+    msg = (
+    "*📚 Coinspace Commands*\n\n"
+    "*💼 Portfolio*\n"
+    "➕ `/add BTC 1 30000` — Add coin\n"
+    "🔁 `/upd BTC 1.5` — Update amount\n"
+    "🗑 `/rm BTC` — Remove coin\n"
+    "🧹 `/clr` — Clear portfolio\n"
+    "📊 `/port` — View portfolio\n"
+    "📈 `/perf` — View performance\n"
+    "📉 `/gr` — Portfolio graph\n\n"
+
+    "*📌 Market Tools*\n"
+    "💰 `/pr BTC` — Price info\n"
+    "⏰ `/alert BTC 70K` — Price alert\n"
+    "🧠 `/ai BTC` — AI comment\n"
+    "🧪 `/bt BTC` — Backtest\n"
+    "⚙️ `/lev` — Leverage signal\n\n"
+
+    "*📰 News & Premium*\n"
+    "🗞 `/nw` — News\n"
+    "🔗 `/rmore` — Links\n"
+    "💎 `/prem` — Premium"
+)
+
+    try:
+        if update.message:
+            await update.message.reply_text(msg, parse_mode="MarkdownV2")
+        elif update.callback_query:
+            await update.callback_query.message.edit_text(msg, parse_mode="MarkdownV2")
+        logger.info(f"help_command: Response sent, user: {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"help_command error: {e}")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "help":
+        await help_command(update, context)
+    elif query.data == "accept_disclaimer":
+        await accept_disclaimer(update, context)
+
+
+
+        
+
+async def port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     holdings = get_portfolio(user_id)
     if not holdings:
-        await update.message.reply_text("📭 Henüz coin eklenmemiş. `/add` komutunu kullan.")
+        await update.message.reply_text("📭 No coins added yet. Use /add.")
         return
-    ids = [symbol_to_id_map.get(sym.upper()) for sym in holdings.keys() if symbol_to_id_map.get(sym.upper())]
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(ids)}&vs_currencies=usd"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            prices = await response.json()
+    symbols = [sym.upper() for sym in holdings.keys() if sym.upper() in symbol_to_id_map]
     total_value = 0
-    msg = "📊 Portföy:\n"
-    for symbol, data in holdings.items():
-        coin_id = symbol_to_id_map.get(symbol.upper())
-        price = prices.get(coin_id, {}).get("usd")
-        amount = data["amount"] if isinstance(data, dict) else data
+    msg = "📊 Portfolio:\n"
+    for symbol in symbols:
+        price = await fetch_price(symbol)
+        amount = holdings.get(symbol.lower(), {}).get("amount", 0)
         if price:
             value = price * amount
             total_value += value
-            msg += f"• {symbol.upper()}: {amount} × ${price:.2f} = ${value:.2f}\n"
+            msg += f"• {symbol}: {amount} × ${price:.2f} = ${value:.2f}\n"
         else:
-            msg += f"• {symbol.upper()}: Fiyat alınamadı\n"
-    msg += f"\n💰 Toplam Değer: ${total_value:.2f}"
+            msg += f"• {symbol}: Price not available\n"
+    msg += f"\n💰 Total Value: ${total_value:.2f}"
     await update.message.reply_text(msg)
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) not in [2, 3]:
-        await update.message.reply_text("❌ Kullanım: /add BTC 0.5 [alış fiyatı]")
+        await update.message.reply_text("❌ Usage: /add <coin> <amount> [buy_price] (e.g., /add BTC 0.5 30000)")
         return
     symbol = context.args[0].upper()
     try:
         amount = float(context.args[1])
         buy_price = float(context.args[2]) if len(context.args) == 3 else None
     except ValueError:
-        await update.message.reply_text("❌ Miktar veya fiyat geçersiz.")
+        await update.message.reply_text("❌ Invalid amount or price.")
         return
     user_id = update.effective_user.id
     add_coin(user_id, symbol, amount, buy_price)
-    msg = f"✅ {amount} {symbol} portföye eklendi."
+    msg = f"✅ {amount} {symbol} added to portfolio."
     if buy_price:
-        msg += f" Alış fiyatı: ${buy_price}"
+        msg += f" Buy price: ${buy_price}"
     await update.message.reply_text(msg)
 
-async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
-        await update.message.reply_text("❌ Kullanım: /remove BTC")
+        await update.message.reply_text("❌ Usage: /rm <coin> (e.g., /rm BTC)")
         return
     symbol = context.args[0].upper()
     user_id = update.effective_user.id
     success = remove_coin(user_id, symbol)
     if success:
-        await update.message.reply_text(f"🗑️ {symbol} portföyünden silindi.")
+        await update.message.reply_text(f"🗑️ {symbol} removed from portfolio.")
     else:
-        await update.message.reply_text(f"⚠️ {symbol} portföyünde bulunamadı.")
+        await update.message.reply_text(f"⚠️ {symbol} not found in portfolio.")
 
-async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
-        await update.message.reply_text("❌ Kullanım: /update BTC 1.2")
+        await update.message.reply_text("❌ Usage: /upd <coin> <amount> (e.g., /upd BTC 1.0)")
         return
     symbol = context.args[0].upper()
     try:
         amount = float(context.args[1])
     except ValueError:
-        await update.message.reply_text("❌ Geçersiz miktar.")
+        await update.message.reply_text("❌ Invalid amount.")
         return
     user_id = update.effective_user.id
     success = update_coin(user_id, symbol, amount)
     if success:
-        await update.message.reply_text(f"🔗 {symbol} miktarı {amount} olarak güncellendi.")
+        await update.message.reply_text(f"🔗 {symbol} quantity updated to {amount}.")
     else:
-        await update.message.reply_text(f"⚠️ {symbol} portföyde bulunamadı, önce `/add` ile ekleyin.")
+        await update.message.reply_text(f"⚠️ {symbol} not found in portfolio, add it with /add first.")
 
-async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def clr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     success = clear_portfolio(user_id)
     if success:
-        await update.message.reply_text("🧼 Portföyünüz başarıyla temizlendi.")
+        await update.message.reply_text("🧼 Portfolio successfully cleared.")
     else:
-        await update.message.reply_text("❗ Temizlenecek veri bulunamadı.")
+        await update.message.reply_text("❗ No data to clear.")
 
-async def graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def gr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     holdings = get_portfolio(user_id)
     if not holdings:
-        await update.message.reply_text("📭 Portföy boş. Önce /add ile ekleyin.")
+        await update.message.reply_text("📭 Portfolio is empty. Add a coin with /add first.")
         return
-    ids = [symbol_to_id_map.get(sym.upper()) for sym in holdings.keys() if symbol_to_id_map.get(sym.upper())]
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(ids)}&vs_currencies=usd"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            prices = await response.json()
-    labels = []
-    values = []
-    for symbol, data in holdings.items():
-        coin_id = symbol_to_id_map.get(symbol.upper())
-        price = prices.get(coin_id, {}).get("usd")
-        amount = data["amount"] if isinstance(data, dict) else data
+    symbols = [sym.upper() for sym in holdings.keys() if sym.upper() in symbol_to_id_map]
+    labels, values = [], []
+    for symbol in symbols:
+        price = await fetch_price(symbol)
+        amount = holdings.get(symbol.lower(), {}).get("amount", 0)
         if price:
             value = price * amount
-            labels.append(symbol.upper())
+            labels.append(symbol)
             values.append(value)
     if not values:
-        await update.message.reply_text("⚠️ Fiyat verisi alınamadı.")
+        await update.message.reply_text("⚠️ Price data not available.")
         return
-    fig, ax = plt.subplots()
-    ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
-    ax.axis("equal")
-    plt.title("📈 Portföy Dağılımı")
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
+    ax1.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
+    ax1.axis("equal")
+    ax1.set_title("📈 Portfolio Distribution")
+    df = await fetch_ohlc_data("ETH")[0]
+    if df is not None and not df.empty and isinstance(df, pd.DataFrame):
+        closes = df["price"].values
+        rsi = [calculate_rsi(closes[:i+1]) for i in range(len(closes)) if i >= 14]
+        macd, signal = zip(*[calculate_macd(closes[:i+1]) for i in range(len(closes)) if calculate_macd(closes[:i+1])[0] is not None])
+        timestamps = range(len(rsi))
+        ax2.plot(timestamps, rsi[-len(closes)+14:], label="RSI", color="purple")
+        ax2.axhline(y=70, color="orange", linestyle="--", label="Overbought (70)")
+        ax2.axhline(y=30, color="orange", linestyle="--", label="Oversold (30)")
+        ax2.set_title("ETH RSI")
+        ax2.set_xlabel("Time (Hours)")
+        ax2.set_ylabel("RSI Value")
+        ax2.legend()
+        ax3.plot(timestamps, macd[-len(closes)+26:], label="MACD", color="green")
+        ax3.plot(timestamps, signal[-len(closes)+26:], label="Signal", color="red", linestyle="--")
+        ax3.set_title("ETH MACD")
+        ax3.set_xlabel("Time (Hours)")
+        ax3.set_ylabel("MACD Value")
+        ax3.legend()
+    plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format="png")
     buf.seek(0)
     plt.close()
-    await update.message.reply_photo(photo=InputFile(buf, filename="portfolio.png"))
+    await update.message.reply_photo(photo=InputFile(buf, filename="portfolio_graph.png"))
 
-async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     portfolio = get_portfolio(user_id)
     if not portfolio:
-        await update.message.reply_text("📭 Portföy boş.")
+        await update.message.reply_text("📭 Portfolio is empty.")
         return
-    ids = [symbol_to_id_map.get(sym.upper()) for sym in portfolio.keys() if symbol_to_id_map.get(sym.upper())]
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(ids)}&vs_currencies=usd"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            prices = await response.json()
-    msg = "📈 Portföy Performansı:\n"
-    total_pl = 0
-    for symbol, data in portfolio.items():
-        coin_id = symbol_to_id_map.get(symbol.upper())
-        current_price = prices.get(coin_id, {}).get("usd")
-        amount = data["amount"] if isinstance(data, dict) else data
-        buy_price = data.get("buy_price") if isinstance(data, dict) else None
+    symbols = [sym.upper() for sym in portfolio.keys() if sym.upper() in symbol_to_id_map]
+    msg, total_pl = "📈 Portfolio Performance:\n", 0
+    for symbol in symbols:
+        current_price = await fetch_price(symbol)
+        amount = portfolio.get(symbol.lower(), {}).get("amount", 0)
+        buy_price = portfolio.get(symbol.lower(), {}).get("buy_price")
         if not current_price:
-            msg += f"• {symbol}: Fiyat alınamadı\n"
+            msg += f"• {symbol}: Price not available\n"
             continue
         if buy_price:
-            current_value = current_price * amount
-            cost_basis = buy_price * amount
+            current_value, cost_basis = current_price * amount, buy_price * amount
             pl = current_value - cost_basis
             total_pl += pl
-            msg += f"• {symbol}: Alış ${buy_price:.2f} → Şimdi ${current_price:.2f} | Kâr/Zarar: ${pl:.2f}\n"
+            msg += f"• {symbol}: Buy ${buy_price:.2f} → Current ${current_price:.2f} | P/L: ${pl:.2f}\n"
         else:
-            msg += f"• {symbol}: Alış fiyatı bilinmiyor\n"
-    msg += f"\n💼 Toplam Kâr/Zarar: ${total_pl:.2f}"
+            msg += f"• {symbol}: Buy price unknown\n"
+    msg += f"\n💼 Total P/L: ${total_pl:.2f}"
     await update.message.reply_text(msg)
 
-async def setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
-        await update.message.reply_text("Kullanım: /setalert BTC 70000")
+        await update.message.reply_text("Usage: /alert <coin> <price> (e.g., /alert BTC 70000)")
         return
     symbol = context.args[0].upper()
     try:
         target_price = float(context.args[1])
     except ValueError:
-        await update.message.reply_text("❌ Geçersiz fiyat.")
+        await update.message.reply_text("❌ Invalid price.")
         return
-    coin_id = symbol_to_id_map.get(symbol)
-    if not coin_id:
-        await update.message.reply_text("❌ Geçersiz coin sembolü.")
+    if symbol not in symbol_to_id_map:
+        await update.message.reply_text("❌ Invalid coin symbol.")
         return
     user_id = update.effective_user.id
-    add_alert(user_id, coin_id, target_price)
-    await update.message.reply_text(f"🔔 {symbol} ({coin_id}) için ${target_price} hedefli uyarı ayarlandı.")
+    add_alert(user_id, symbol, target_price)
+    await update.message.reply_text(f"🔔 Alert set for {symbol} at ${target_price}.")
 
 async def check_alerts(app):
     while True:
-        alerts = get_all_alerts()
+        alerts = get_all_alerts() or []
         if not alerts:
             await asyncio.sleep(300)
             continue
         valid_alerts = [alert for alert in alerts if all(k in alert for k in ("symbol", "target_price", "user_id"))]
-        symbol_map = {}
-        for alert in valid_alerts:
-            symbol = alert["symbol"].lower()
-            symbol_map.setdefault(symbol, []).append(alert)
+        symbol_map = {alert["symbol"].lower(): alerts_list for alert in valid_alerts for alerts_list in [symbol_map.get(alert["symbol"].lower(), []) + [alert]]}
         for symbol, alerts_list in symbol_map.items():
-            coin_id = symbol_to_id_map.get(symbol.upper())
-            if not coin_id:
-                continue
-            price = await fetch_price(coin_id)
+            price = await fetch_price(symbol.upper())
             if price is None:
                 continue
             for alert in alerts_list:
-                target_price = alert["target_price"]
-                user_id = alert["user_id"]
-                if price >= target_price:
+                if price >= alert["target_price"]:
                     try:
-                        await app.bot.send_message(
-                            chat_id=user_id,
-                            text=f"📢 *{symbol.upper()}* ${target_price} seviyesini geçti!\nŞu anki fiyat: ${price:.2f}",
-                            parse_mode="Markdown"
-                        )
-                        delete_alert(user_id, symbol.upper())
+                        await app.bot.send_message(chat_id=alert["user_id"], text=f"📢 *{symbol.upper()}* reached ${alert['target_price']}!\nCurrent price: ${price:.2f}", parse_mode="Markdown")
+                        delete_alert(alert["user_id"], symbol.upper())
                     except Exception as e:
-                        print(f"❌ Bildirim gönderilemedi: {e}")
+                        logger.error(f"❌ Notification failed: {e}")
         await asyncio.sleep(300)
 
 async def fetch_newsapi_news():
     url = f"https://newsapi.org/v2/top-headlines?category=business&q=crypto&apiKey={NEWS_API_KEY}"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
-            print(f"🌐 NewsAPI status: {response.status}")
+            logger.info(f"🌐 NewsAPI status: {response.status}")
             if response.status == 200:
                 return await response.json()
             return None
 
 async def summarize_news(title, description):
-    prompt = (
-        f"Aşağıdaki haberin kısa bir özetini yaz:\n\n"
-        f"Başlık: {title}\n"
-        f"Açıklama: {description}\n\n"
-        f"Kısa ve net bir şekilde yatırımcıya yönelik özet hazırla."
-    )
+    prompt = f"Write a short summary of the following news:\n\nTitle: {title}\nDescription: {description}\n\nPrepare a concise summary for investors."
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
-            temperature=0.7
-        )
+        response = await client.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": prompt}], max_tokens=100, temperature=0.7)
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"❌ Özetleme hatası: {e}")
-        return "⚠️ Özetlenemedi."
+        logger.error(f"❌ Summary generation error: {e}")
+        return "⚠️ Summary generation failed."
 
-async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("🚀 /news komutu tetiklendi")
+async def nw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("🚀 /news command triggered")
     news_data = await fetch_newsapi_news()
     if not news_data or "articles" not in news_data:
-        await update.message.reply_text("❌ Haber verisi alınamadı.")
+        await update.message.reply_text("❌ News data not available.")
         return
     sent_count = 0
     for article in news_data["articles"][:5]:
         url = article.get("url")
         title = article.get("title", "No Title")
-        description = article.get("description", "No Comment")
+        description = article.get("description", "No Description")
         norm_url = normalize_url(url)
         if norm_url and norm_url not in sent_news_urls:
             summary = await summarize_news(title, description)
-            text = (
-                f"📰 <b>{escape(title)}</b>\n"
-                f"{escape(summary)}\n"
-                f"<a href=\"{url}\">🔗 Habere Git</a>"
-            )
+            text = f"📰 <b>{escape(title)}</b>\n{escape(summary)}\n<a href=\"{url}\">🔗 Read More</a>"
             try:
                 await update.message.reply_text(text, parse_mode="HTML")
                 sent_news_urls.add(norm_url)
                 save_sent_urls()
                 sent_count += 1
             except Exception as e:
-                print(f"⚠️ Gönderim hatası: {e}")
+                logger.warning(f"⚠️ Sending error: {e}")
     if sent_count == 0:
-        await update.message.reply_text("⚠️ Gösterilecek yeni haber bulunamadı.")
+        await update.message.reply_text("⚠️ No new news available.")
 
-async def readmore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧭 Haber linklerini görmek için /news komutunu kullanın.")
+async def rmore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧭 View news links with the /nw command.")
 
-async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Kullanım: /backtest BTC")
+        await update.message.reply_text("Usage: /bt <coin> (e.g., /bt BTC)")
         return
     symbol = context.args[0].upper()
-    coin_id = symbol_to_id_map.get(symbol)
-    if not coin_id:
-        await update.message.reply_text("❌ Coin bulunamadı.")
+    if symbol not in symbol_to_id_map:
+        await update.message.reply_text("❌ Coin not found.")
         return
-    df = await fetch_ohlc_data(coin_id, days=30)
+    df, _, _ = await fetch_ohlc_data(symbol, days=30)
     if df is None or df.empty:
-        await update.message.reply_text("❌ Veri alınamadı.")
+        await update.message.reply_text("❌ Data not available.")
         return
     from ta.momentum import RSIIndicator
     from ta.trend import SMAIndicator
     df["RSI"] = RSIIndicator(df["price"]).rsi()
     df["MA"] = SMAIndicator(df["price"], window=14).sma_indicator()
-    buy_points = []
-    sell_points = []
-    position = None
-    entry_price = 0
-    pnl = 0
+    buy_points, sell_points, position, entry_price, pnl = [], [], None, 0, 0
     for i in range(1, len(df)):
-        rsi = df["RSI"].iloc[i]
-        price = df["price"].iloc[i]
-        ma = df["MA"].iloc[i]
+        rsi, price, ma = df["RSI"].iloc[i], df["price"].iloc[i], df["MA"].iloc[i]
         if rsi < 30 and price > ma and not position:
-            entry_price = price
-            position = "LONG"
+            entry_price, position = price, "LONG"
             buy_points.append((df.index[i], price))
         elif rsi > 70 and position == "LONG":
             pnl += price - entry_price
             sell_points.append((df.index[i], price))
             position = None
-    msg = f"📈 {symbol} RSI + MA Geri Test Sonucu (30 gün):\n"
-    msg += f"✅ Alım sayısı: {len(buy_points)}\n"
-    msg += f"💰 Toplam Kar: ${pnl:.2f}"
+    msg = f"📈 {symbol} RSI + MA Backtest Result (30 days):\n✅ Buy count: {len(buy_points)}\n💰 Total Profit: ${pnl:.2f}"
     await update.message.reply_text(msg)
 
-async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 1 Ay – $29.99", url="https://nowpayments.io/payment/?iid=5260731771")],
-        [InlineKeyboardButton("🔵 3 Ay – $70", url="https://nowpayments.io/payment/?iid=4400895826")],
-        [InlineKeyboardButton("🟣 1 Yıl – $399", url="https://nowpayments.io/payment/?iid=4501340550")],
+        [InlineKeyboardButton("🟢 1 Month – $29.99", url="https://nowpayments.io/payment/?iid=5260731771")],
+        [InlineKeyboardButton("🔵 3 Months – $69.99", url="https://nowpayments.io/payment/?iid=4400895826")],
+        [InlineKeyboardButton("🟣 1 Year – $399.99", url="https://nowpayments.io/payment/?iid=4501340550")],
     ])
     msg = (
-        "✨ *Coinspace Premium’a Yükselt!*\n\n"
-        "🚀 Avantajlar:\n"
-        "• Günde 10’a kadar AI tabanlı ticaret sinyali\n"
-        "• Kaldıraçlı ticaret önerileri\n"
-        "• Öncelikli piyasa uyarıları ve haberler\n"
-        "• Portföy analiz araçları\n\n"
-        "💰 *Fiyatlar:*\n"
-        "1 Ay: $29.99\n"
-        "3 Ay: $70\n"
-        "1 Yıl: $399\n\n"
-        "_USDT (TRC20) ile NOWPayments üzerinden güvenli ödeme yapın._"
+        "✨ *Upgrade to Coinspace Premium!*\n\n"
+        "🚀 Benefits:\n"
+        "• Up to 10 AI-based trading signals per day\n"
+        "• Leverage trading suggestions\n"
+        "• Priority market alerts and news\n"
+        "• Portfolio analysis tools\n\n"
+        "💰 *Pricing:*\n"
+        "1 Month: $29.99\n"
+        "3 Months: $69.99\n"
+        "1 Year: $399.99\n\n"
+        "_Secure payment via USDT (TRC20) through NOWPayments._"
     )
-    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="MarkdownV2")
 
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -766,13 +770,13 @@ async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     accepted_users.add(user_id)
     save_accepted_users(accepted_users)
     await query.answer()
-    await query.edit_message_text("✅ Şartları kabul ettiniz. Komutları kullanmaya başlayabilirsiniz.")
+    await query.edit_message_text("✅ Terms accepted. You can start using commands.")
 
 async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     callback_data = query.data
-    print(f"[DEBUG] Geri bildirim alındı: {callback_data} from user {query.from_user.id}")
+    logger.debug(f"[DEBUG] Feedback received: {callback_data} from user {query.from_user.id}")
     if not callback_data.startswith("feedback:"):
         return
     feedback = callback_data.split(":")[1]
@@ -795,34 +799,16 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             found = True
             break
     if not found:
-        signals.append({
-            "message_id": message_id,
-            "likes": [user_id] if feedback == "like" else [],
-            "dislikes": [user_id] if feedback == "dislike" else []
-        })
+        signals.append({"message_id": message_id, "likes": [user_id] if feedback == "like" else [], "dislikes": [user_id] if feedback == "dislike" else []})
     save_signals(signals)
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("✅ Geri bildirimin için teşekkürler.")
+    await query.message.reply_text("✅ Thank you for your feedback.")
 
 async def send_ai_signal(update: Update, context: ContextTypes.DEFAULT_TYPE, signal_text: str):
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("👍", callback_data="feedback:like"),
-            InlineKeyboardButton("👎", callback_data="feedback:dislike")
-        ]
-    ])
-    message = await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=signal_text,
-        reply_markup=keyboard
-    )
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👍", callback_data="feedback:like"), InlineKeyboardButton("👎", callback_data="feedback:dislike")]])
+    message = await context.bot.send_message(chat_id=update.effective_chat.id, text=signal_text, reply_markup=keyboard)
     signals = load_signals()
-    signals.append({
-        "message_id": message.message_id,
-        "text": signal_text,
-        "likes": [],
-        "dislikes": []
-    })
+    signals.append({"message_id": message.message_id, "text": signal_text, "likes": [], "dislikes": []})
     save_signals(signals)
 
 async def check_and_send_news(app):
@@ -830,72 +816,76 @@ async def check_and_send_news(app):
         news_data = await fetch_newsapi_news()
         if news_data and "articles" in news_data:
             for article in news_data["articles"]:
-                url = article.get("url")
-                title = article.get("title", "No Title")
-                description = article.get("description", "No Comment")
+                url, title, description = article.get("url"), article.get("title", "No Title"), article.get("description", "No Description")
                 news_key = get_news_key(url, title)
-                if news_key in sent_news_urls:
-                    continue
-                summary = await summarize_news(title, description)
-                text = (
-                    f"📰 <b>{escape(title)}</b>\n"
-                    f"{escape(summary)}\n"
-                    f"<a href=\"{url}\">🔗 Habere Git</a>"
-                )
-                try:
-                    await app.bot.send_message(
-                        chat_id=os.getenv("OWNER_CHAT_ID"),
-                        text=text,
-                        parse_mode="HTML",
-                        disable_web_page_preview=True
-                    )
-                    sent_news_urls.add(news_key)
-                    save_sent_urls()
-                except Exception as e:
-                    print(f"⚠️ Haber gönderilemedi: {e}")
+                if news_key not in sent_news_urls:
+                    summary = await summarize_news(title, description)
+                    text = f"📰 <b>{escape(title)}</b>\n{escape(summary)}\n<a href=\"{url}\">🔗 Read More</a>"
+                    try:
+                        await app.bot.send_message(chat_id=os.getenv("OWNER_CHAT_ID", "dummy_owner_id"), text=text, parse_mode="HTML", disable_web_page_preview=True)
+                        sent_news_urls.add(news_key)
+                        save_sent_urls()
+                    except Exception as e:
+                        logger.error(f"⚠️ News sending failed: {e}")
         await asyncio.sleep(7200)
 
-async def fetch_coin_data(coin_id):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            if response.status == 200:
-                return await response.json()
-            return None
+async def fetch_coin_data(symbol):
+    price = await fetch_price(symbol)
+    return {"symbol": f"{symbol.upper()}USDT", "price": price} if price is not None else None
+
+async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+    if not text.startswith("/ai"):
+        return
+    symbol = text.replace("/ai", "").strip().upper()
+    logger.info(f"ai_comment: Processing request for symbol {symbol}")
+    if not symbol or symbol not in symbol_to_id_map:
+        await update.message.reply_text("❌ Invalid coin symbol. Please use a valid coin traded on Binance (e.g., /ai BTC, /ai ETH).")
+        return
+    await update.message.reply_text("💬 Preparing AI comment...")
+    try:
+        price_data = await fetch_price(symbol)
+        if price_data is None:
+            await update.message.reply_text(f"❌ Failed to retrieve price data for {symbol}. Please try again.")
+            return
+        coin_data = {"symbol": f"{symbol}USDT", "price": price_data}
+        comment = await generate_ai_comment(coin_data)
+        await send_ai_signal(update, context, comment)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error occurred during processing: {str(e)}")
+        logger.error(f"ai_comment error: {e}, symbol={symbol}, coin_data={coin_data}")
 
 async def run_bot():
-    print("🚀 Bot başlatılıyor...")
+    logger.info("🚀 Bot starting...")
     app = ApplicationBuilder().token(TOKEN).build()
-    print("✅ Telegram bot uygulaması oluşturuldu.")
+    logger.info("✅ Telegram bot application created.")
     await load_symbol_map()
-    print("✅ Coin sembolleri yüklendi.")
+    logger.info("✅ Coin symbols loaded.")
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("price", price))
-    app.add_handler(CommandHandler("portfolio", portfolio))
+    app.add_handler(CommandHandler("pr", pr))
+    app.add_handler(CommandHandler("port", port))
     app.add_handler(CommandHandler("add", add))
-    app.add_handler(CommandHandler("remove", remove))
-    app.add_handler(CommandHandler("update", update_command))
-    app.add_handler(CommandHandler("clear", clear))
-    app.add_handler(CommandHandler("setalert", setalert))
-    app.add_handler(CommandHandler("graph", graph))
-    app.add_handler(CommandHandler("performance", performance))
-    app.add_handler(CommandHandler("news", news_command))
-    app.add_handler(CommandHandler("readmore", readmore))
-    app.add_handler(CommandHandler("backtest", backtest))
-    app.add_handler(CommandHandler("premium", premium))
-    app.add_handler(CommandHandler("leverage_signal", leverage_signal))
-    app.add_handler(CallbackQueryHandler(accept_disclaimer, pattern="^accept_disclaimer$"))
+    app.add_handler(CommandHandler("rm", rm))
+    app.add_handler(CommandHandler("upd", upd))
+    app.add_handler(CommandHandler("clr", clr))
+    app.add_handler(CommandHandler("alert", alert))
+    app.add_handler(CommandHandler("gr", gr))
+    app.add_handler(CommandHandler("perf", perf))
+    app.add_handler(CommandHandler("nw", nw))
+    app.add_handler(CommandHandler("rmore", rmore))
+    app.add_handler(CommandHandler("bt", bt))
+    app.add_handler(CommandHandler("prem", prem))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CallbackQueryHandler(feedback_handler))
-    for cmd in ["ai_btc", "ai_eth", "ai_sol"]:
-        app.add_handler(CommandHandler(cmd, ai_comment))
+    app.add_error_handler(error_handler)
     asyncio.create_task(check_alerts(app))
     asyncio.create_task(check_and_send_news(app))
-    print("🔄 Arka plan görevleri başlatıldı.")
+    logger.info("🔄 Background tasks started.")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    print("✅ Bot başlatıldı.")
+    logger.info("✅ Bot started.")
 
 if __name__ == "__main__":
     asyncio.run(run_bot())
