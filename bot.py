@@ -47,6 +47,7 @@ except Exception as e:
     logger.error(f"❌ Model loading failed: {e}")
 
 # Accepted users
+# Fonksiyon: Kabul edilmiş kullanıcıları yükler (accepted_users.json dosyasından)
 def load_accepted_users():
     if not os.path.exists("accepted_users.json"):
         return set()
@@ -56,10 +57,12 @@ def load_accepted_users():
         except json.JSONDecodeError:
             return set()
 
+# Fonksiyon: Kabul edilmiş kullanıcıları kaydeder (accepted_users.json dosyasına)
 def save_accepted_users(users):
     with open("accepted_users.json", "w") as f:
         json.dump(list(users), f)
 
+# Fonksiyon: Kullanıcının kabul edilmiş olup olmadığını kontrol eder
 async def check_user_accepted(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return update.effective_user.id in load_accepted_users()
 
@@ -78,6 +81,7 @@ else:
 
 SIGNAL_FILE = "signals.json"
 
+# Fonksiyon: Sinyal verilerini yükler (signals.json dosyasından)
 def load_signals():
     if os.path.exists(SIGNAL_FILE):
         with open(SIGNAL_FILE, "r") as f:
@@ -87,6 +91,7 @@ def load_signals():
                 return []
     return []
 
+# Fonksiyon: Sinyal verilerini kaydeder (signals.json dosyasına)
 def save_signals(data):
     with open(SIGNAL_FILE, "w") as f:
         json.dump(data, f, indent=2)
@@ -94,6 +99,7 @@ def save_signals(data):
 # Coin symbol map
 symbol_to_id_map = {}
 
+# Fonksiyon: Binance API'den coin sembollerini yükler ve ek coinler ekler
 async def load_symbol_map():
     global symbol_to_id_map
     url = "https://api.binance.com/api/v3/exchangeInfo"
@@ -103,27 +109,35 @@ async def load_symbol_map():
             if response.status == 200:
                 data = await response.json()
                 symbol_to_id_map.update({symbol["symbol"].replace("USDT", "").upper(): symbol["symbol"] for symbol in data["symbols"] if symbol["status"] == "TRADING" and symbol["symbol"].endswith("USDT")})
-                logger.info(f"✅ Coin symbols loaded.")
+                additional_coins = {"BNB", "ADA", "XRP", "DOT", "LINK"}  # Popüler ek coinler
+                for coin in additional_coins:
+                    if any(symbol["symbol"] == f"{coin}USDT" for symbol in data["symbols"] if symbol["status"] == "TRADING"):
+                        symbol_to_id_map[coin.upper()] = f"{coin}USDT"
+                logger.info(f"✅ Coin symbols loaded with additional coins: {list(symbol_to_id_map.keys())}")
             else:
                 logger.error(f"❌ Failed to fetch coin list: status={response.status}")
 
 # Helper functions
+# Fonksiyon: URL'yi normalleştirir
 def normalize_url(raw_url):
     if not raw_url:
         return ""
     parsed = urlparse(raw_url)
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
 
+# Fonksiyon: Gönderilen haber URL'lerini kaydeder
 def save_sent_urls():
     with open(SENT_NEWS_FILE, "w") as f:
         json.dump(list(sent_news_urls), f)
 
+# Fonksiyon: Haber URL'si ve başlığı için benzersiz anahtar oluşturur
 def get_news_key(url, title):
     norm_url = normalize_url(url)
     key_base = f"{norm_url}|{title.strip().lower()}"
     return hashlib.md5(key_base.encode()).hexdigest()
 
 # Fetch price
+# Fonksiyon: Belirtilen sembol için fiyat verisini çeker
 async def fetch_price(symbol: str):
     full_symbol = symbol_to_id_map.get(symbol.upper(), f"{symbol.upper()}USDT")
     url = "https://api.binance.com/api/v3/ticker/price"
@@ -138,6 +152,7 @@ async def fetch_price(symbol: str):
             return None
 
 # Price command
+# Fonksiyon: /pr komutu ile coin fiyatını gösterir
 async def pr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please enter a coin: /pr BTC")
@@ -153,6 +168,7 @@ async def pr(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to retrieve price for {symbol}.")
 
 # Fetch OHLC data
+# Fonksiyon: Belirtilen sembol için OHLC verilerini çeker
 async def fetch_ohlc_data(symbol: str, days=7):
     full_symbol = symbol_to_id_map.get(symbol.upper(), f"{symbol.upper()}USDT")
     url = "https://api.binance.com/api/v3/klines"
@@ -182,6 +198,7 @@ async def fetch_ohlc_data(symbol: str, days=7):
             return None, 0.0, 0.0
 
 # Technical indicators
+# Fonksiyon: RSI göstergesini hesaplar
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return None
@@ -195,6 +212,7 @@ def calculate_rsi(prices, period=14):
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
+# Fonksiyon: Üssel Hareketli Ortalama (EMA) hesaplar
 def exponential_moving_average(prices, window):
     if len(prices) < window:
         return None
@@ -207,6 +225,7 @@ def exponential_moving_average(prices, window):
             ema.append(price * k + ema[-1] * (1 - k))
     return ema
 
+# Fonksiyon: MACD göstergesini hesaplar
 def calculate_macd(prices):
     if len(prices) < 26:
         return None, None
@@ -222,6 +241,7 @@ def calculate_macd(prices):
     return round(macd_line[-1], 2), round(signal_line[-1], 2) if signal_line else 0.0
 
 # Model predictions
+# Fonksiyon: Sinyal tahmini yapar
 def predict_signal(features_df):
     global model
     if not model:
@@ -234,6 +254,7 @@ def predict_signal(features_df):
         logger.error(f"❌ Prediction error: {e}")
         return None
 
+# Fonksiyon: Take Profit (TP) tahmini yapar
 def predict_tp(features):
     global tp_model
     if not tp_model:
@@ -245,6 +266,7 @@ def predict_tp(features):
         logger.error(f"❌ TP prediction error: {e}")
         return None
 
+# Fonksiyon: Stop Loss (SL) tahmini yapar
 def predict_sl(features):
     global sl_model
     if not sl_model:
@@ -257,131 +279,169 @@ def predict_sl(features):
         return None
 
 # Generate AI comment
+# Fonksiyon: AI tabanlı yorum oluşturur
 async def generate_ai_comment(coin_data):
     name = coin_data["symbol"].replace("USDT", "")
     price = coin_data["price"]
+    logger.info(f"generate_ai_comment: Processing data for {name}")
+
     df, change_24h, change_7d = await fetch_ohlc_data(name)
     if df is None or df.empty or not isinstance(df, pd.DataFrame):
-        logger.error(f"❌ Invalid data for {name}")
+        logger.error(f"generate_ai_comment: Invalid data for {name}")
         return f"❌ Data unavailable for {name}. Please try again later."
 
     closes = df["price"].values
     if not isinstance(closes, np.ndarray) or len(closes) < 26:
-        logger.error(f"❌ Insufficient data for {name}")
+        logger.error(f"generate_ai_comment: Insufficient data for {name}")
         return f"❌ Insufficient data for {name}. More historical data required."
 
     rsi = calculate_rsi(closes)
     macd, signal = calculate_macd(closes)
-    ma_5 = sum(closes[-5:]) / 5
-    ma_20 = sum(closes[-20:]) / 20
+    ma_5 = np.mean(closes[-5:])
+    ma_20 = np.mean(closes[-20:])
     volatility = df["price"].rolling(window=10).std().iloc[-1]
     momentum = df["price"].iloc[-1] - df["price"].shift(10).iloc[-1]
     price_change = df["price"].pct_change().iloc[-1]
     volume_change = df["price"].rolling(window=1).mean().pct_change().iloc[-1]
 
     features = pd.DataFrame([{
-        "RSI": rsi if rsi is not None else 50.0,
-        "MACD": macd if macd is not None else 0.0,
-        "Signal": signal if signal is not None else 0.0,
+        "RSI": rsi or 50.0,
+        "MACD": macd or 0.0,
+        "Signal": signal or 0.0,
         "MA_5": ma_5,
         "MA_20": ma_20,
-        "Volatility": volatility if not np.isnan(volatility) else 0.0,
-        "Momentum": momentum if not np.isnan(momentum) else 0.0,
-        "Price_Change": price_change if not np.isnan(price_change) else 0.0,
-        "Volume_Change": volume_change if not np.isnan(volume_change) else 0.0
+        "Volatility": 0.0 if np.isnan(volatility) else volatility,
+        "Momentum": 0.0 if np.isnan(momentum) else momentum,
+        "Price_Change": 0.0 if np.isnan(price_change) else price_change,
+        "Volume_Change": 0.0 if np.isnan(volume_change) else volume_change,
     }])
 
-    prediction = predict_signal(features)
-    tp_raw = predict_tp(features) if predict_tp(features) is not None else 1.0
-    sl_raw = predict_sl(features) if predict_sl(features) is not None else 2.0
+    if model is None or tp_model is None or sl_model is None:
+        logger.error("generate_ai_comment: Model(s) not loaded")
+        return "❌ AI models not loaded. Please contact support."
 
-    tp = None
-    sl = None
+    logger.info(f"generate_ai_comment: Predicting for {name}")
+    prediction = predict_signal(features)
+    if prediction is None:
+        logger.error(f"generate_ai_comment: Prediction failed for {name}")
+        return "❌ AI prediction failed. Please try again later."
+    logger.info(f"generate_ai_comment: Prediction for {name} = {prediction}")
+
+    tp_pred = predict_tp(features)
+    sl_pred = predict_sl(features)
+    tp_raw = tp_pred if tp_pred is not None else 1.0
+    sl_raw = sl_pred if sl_pred is not None else 2.0
+
+    tp, sl = None, None
     try:
         if prediction == 1:
-            tp = price * (1 + max(0.01, tp_raw / 100))
-            sl = price * (1 - max(0.02, sl_raw / 100))
+            tp = round(price * (1 + max(0.01, tp_raw / 100)), 2)
+            sl = round(price * (1 - max(0.02, sl_raw / 100)), 2)
         elif prediction == 0:
-            tp = price * (1 - max(0.01, tp_raw / 100))
-            sl = price * (1 + max(0.02, sl_raw / 100))
+            tp = round(price * (1 - max(0.01, tp_raw / 100)), 2)
+            sl = round(price * (1 + max(0.02, sl_raw / 100)), 2)
 
-        min_tp_sl_diff = price * 0.02
+        min_tp_sl_diff = round(price * 0.02, 2)
         if tp and sl:
             if prediction == 0 and tp >= sl:
-                tp = max(price - min_tp_sl_diff, price * 0.9)
+                tp = max(price - min_tp_sl_diff, round(price * 0.9, 2))
             elif prediction == 1 and tp <= sl:
-                tp = min(price + min_tp_sl_diff, price * 1.1)
+                tp = min(price + min_tp_sl_diff, round(price * 1.1, 2))
             if abs(tp - sl) < min_tp_sl_diff:
                 sl = tp + min_tp_sl_diff if prediction == 0 else tp - min_tp_sl_diff
     except Exception as e:
-        logger.error(f"❌ Error calculating TP/SL: {e}")
+        logger.error(f"generate_ai_comment: Error calculating TP/SL for {name}: {e}")
         return f"❌ Error calculating TP/SL: {str(e)}"
 
     def generate_natural_comment():
-        if rsi < 30:
-            rsi_c = "RSI is in oversold territory, indicating potential upside."
-        elif rsi > 70:
-            rsi_c = "RSI is in overbought territory, indicating a correction risk."
-        else:
-            rsi_c = "RSI is balanced, showing a neutral trend."
-
-        if macd > signal:
-            macd_c = "MACD is above the signal line, indicating positive momentum."
-        elif macd < signal:
-            macd_c = "MACD is below the signal line, indicating a weak trend."
-        else:
-            macd_c = "MACD is close to the signal line, direction unclear."
-
-        if ma_5 > ma_20:
-            trend_c = "Short-term MA is above, suggesting a potential bullish trend."
-        else:
-            trend_c = "Short-term MA is below, indicating bearish pressure."
-
+        rsi_c = "RSI is in oversold territory." if rsi < 30 else ("RSI is in overbought territory." if rsi > 70 else "RSI is neutral.")
+        macd_c = "MACD above signal line." if macd > signal else ("MACD below signal line." if macd < signal else "MACD matches signal.")
+        trend_c = "MA5 above MA20 (bullish)." if ma_5 > ma_20 else "MA5 below MA20 (bearish)."
         return f"{rsi_c} {macd_c} {trend_c}"
 
-    short_comment = generate_natural_comment()
     ai_signal = "⚠️ AI prediction failed." if prediction is None else ("📈 BUY" if prediction == 1 else "📉 SELL")
     tp_text = f"🎯 TP: ${tp:.2f}" if tp else "❌ TP prediction failed."
     sl_text = f"🛑 SL: ${sl:.2f}" if sl else "❌ SL prediction failed."
+    leverage = "💪 📈 Leverage: 5x Long" if prediction == 1 else "💪 📉 Leverage: 5x Short"  # Emoji ile hizalı
+    risk = "⚠️ ✅ Low Risk" if 30 < rsi < 70 and abs(macd - signal) > 0.05 and tp and sl and abs((tp - sl) / price) < 0.1 and volatility / price < 0.05 else "⚠️ 🚨 High Risk"
+    short_comment = generate_natural_comment()
 
-    leverage = "⚠️ Leverage not recommended"
-    risk = "✅ Low Risk" if 30 < rsi < 70 and abs(macd - signal) > 0.05 and tp and sl and abs((tp - sl) / price) < 0.1 and volatility / price < 0.05 else "⚠️ High Risk"
+    # Biçimlendirme: Pozitif ve negatif değerler için tutarlı format
+    change_24h_str = f"{change_24h:+.2f}%"  # + ile pozitif, - ile negatif
+    change_7d_str = f"{change_7d:+.2f}%"    # + ile pozitif, - ile negatif
 
-    comment = (
-        f"📊 {name} (${price:.2f})\n"
-        f"24h: %{change_24h:.2f} | 7d: %{change_7d:.2f}\n\n"
-        f"{ai_signal}\n"
+    return (
+        f"📊 {name.upper()} (${price:.2f})\n"  # Sembolü büyük harf ile tutarlılık
+        f"📈 24h: {change_24h_str} | 📅 7d: {change_7d_str}\n\n"  # Emoji ile hizalı
+        f"💡 {ai_signal}\n"
         f"📉 RSI: {rsi:.2f} | 🧮 MACD: {macd:.2f}\n"
         f"📈 MA(5): {ma_5:.2f} | MA(20): {ma_20:.2f}\n\n"
-        f"{tp_text}\n{sl_text}\n\n"
-        f"{leverage}\n{risk}\n\n"
+        f"🎯 TP: ${tp:.2f} | 🛑 SL: ${sl:.2f}\n\n"  # Aynı satırda hizalı
+        f"{leverage}  |  {risk}\n\n"  # Boşluklarla hizalı
         f"🧠 AI Comment: {short_comment}"
     )
-    return comment
+
+
+# Fonksiyon: AI yorumunu işler ve gönderir
+async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+    if not text.startswith("/ai"):
+        return
+    symbol = text.replace("/ai", "").strip().upper()
+    logger.info(f"ai_comment: Received command for symbol {symbol} from user {update.effective_user.id}")
+    if not symbol or symbol not in symbol_to_id_map:
+        logger.warning(f"ai_comment: Invalid symbol {symbol} for user {update.effective_user.id}")
+        await update.message.reply_text("❌ Invalid coin symbol. Please use a valid coin traded on Binance (e.g., /ai BTC, /ai ETH, /ai SOL, /ai BNB, /ai ADA, /ai XRP, /ai DOT, /ai LINK).")
+        return
+    await update.message.reply_text("💬 Preparing AI comment...")
+    try:
+        logger.info(f"ai_comment: Fetching price for {symbol}")
+        price_data = await fetch_price(symbol)
+        if price_data is None:
+            logger.error(f"ai_comment: Failed to fetch price for {symbol}")
+            await update.message.reply_text(f"❌ Failed to retrieve price data for {symbol}. Please check your internet connection or API key.")
+            return
+        coin_data = {"symbol": f"{symbol}USDT", "price": price_data}
+        logger.info(f"ai_comment: Generating comment for {symbol}")
+        comment = await generate_ai_comment(coin_data)
+        logger.info(f"ai_comment: Comment generated, sending signal for {symbol} with feedback buttons")
+        await send_ai_signal(update, context, comment)
+    except Exception as e:
+        logger.error(f"ai_comment error: {e}, symbol={symbol}, coin_data={coin_data}")
+        await update.message.reply_text(f"❌ Error occurred during processing: {str(e)}. Please try again later.")
+        
 
 # Portfolio and Alert functions
+# Fonksiyon: Kullanıcının portföyünü döndürür (simüle edilmiş)
 def get_portfolio(user_id):
     return {}  # Simulated
 
+# Fonksiyon: Portföye coin ekler (simüle edilmiş)
 def add_coin(user_id, symbol, amount, buy_price=None):
     return True  # Simulated
 
+# Fonksiyon: Portföyden coin kaldırır (simüle edilmiş)
 def remove_coin(user_id, symbol):
     return True  # Simulated
 
+# Fonksiyon: Portföydaki coin miktarını günceller (simüle edilmiş)
 def update_coin(user_id, symbol, amount):
     return True  # Simulated
 
+# Fonksiyon: Portföyü temizler (simüle edilmiş)
 def clear_portfolio(user_id):
     return True  # Simulated
 
+# Fonksiyon: Tüm uyarıları döndürür (simüle edilmiş)
 def get_all_alerts():
     return []  # Simulated
 
+# Fonksiyon: Uyarıyı siler (simüle edilmiş)
 def delete_alert(user_id, symbol):
     return True  # Simulated
 
 # Commands
+# Fonksiyon: Botun başlangıç mesajını işler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await check_user_accepted(update, context):
@@ -415,15 +475,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
+# Fonksiyon: Hata işleyicisi
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}")
-    if update and update.message:
+    if update and update.effective_message:
         try:
-            await update.message.reply_text("❌ An error occurred. Please try again or contact support.")
+            await update.effective_message.reply_text("❌ An error occurred. Please try again or contact support.")
         except Exception:
             pass
 
 
+# Fonksiyon: Yardım komutunu işler
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"help_command: Starting, user: {update.effective_user.id}")
     if not await check_user_accepted(update, context):
@@ -469,6 +531,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"help_command error: {e}")
 
+# Fonksiyon: Buton tıklamalarını işler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -481,6 +544,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         
 
+# Fonksiyon: Portföy bilgilerini gösterir
 async def port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     holdings = get_portfolio(user_id)
@@ -502,6 +566,7 @@ async def port(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"\n💰 Total Value: ${total_value:.2f}"
     await update.message.reply_text(msg)
 
+# Fonksiyon: Portföye coin ekler
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) not in [2, 3]:
         await update.message.reply_text("❌ Usage: /add <coin> <amount> [buy_price] (e.g., /add BTC 0.5 30000)")
@@ -520,6 +585,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f" Buy price: ${buy_price}"
     await update.message.reply_text(msg)
 
+# Fonksiyon: Portföyden coin kaldırır
 async def rm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /rm <coin> (e.g., /rm BTC)")
@@ -532,6 +598,7 @@ async def rm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ {symbol} not found in portfolio.")
 
+# Fonksiyon: Portföydaki coin miktarını günceller
 async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.message.reply_text("❌ Usage: /upd <coin> <amount> (e.g., /upd BTC 1.0)")
@@ -539,7 +606,7 @@ async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper()
     try:
         amount = float(context.args[1])
-    except ValueError:
+    except ValueValueError:
         await update.message.reply_text("❌ Invalid amount.")
         return
     user_id = update.effective_user.id
@@ -549,6 +616,7 @@ async def upd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ {symbol} not found in portfolio, add it with /add first.")
 
+# Fonksiyon: Portföyü temizler
 async def clr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     success = clear_portfolio(user_id)
@@ -557,6 +625,7 @@ async def clr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❗ No data to clear.")
 
+# Fonksiyon: Portföy grafiğini oluşturur
 async def gr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     holdings = get_portfolio(user_id)
@@ -605,6 +674,7 @@ async def gr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plt.close()
     await update.message.reply_photo(photo=InputFile(buf, filename="portfolio_graph.png"))
 
+# Fonksiyon: Portföy performansını gösterir
 async def perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     portfolio = get_portfolio(user_id)
@@ -630,6 +700,7 @@ async def perf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"\n💼 Total P/L: ${total_pl:.2f}"
     await update.message.reply_text(msg)
 
+# Fonksiyon: Fiyat uyarılarını ayarlar
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 2:
         await update.message.reply_text("Usage: /alert <coin> <price> (e.g., /alert BTC 70000)")
@@ -647,6 +718,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_alert(user_id, symbol, target_price)
     await update.message.reply_text(f"🔔 Alert set for {symbol} at ${target_price}.")
 
+# Fonksiyon: Fiyat uyarılarını kontrol eder ve bildirir
 async def check_alerts(app):
     while True:
         alerts = get_all_alerts() or []
@@ -668,6 +740,7 @@ async def check_alerts(app):
                         logger.error(f"❌ Notification failed: {e}")
         await asyncio.sleep(300)
 
+# Fonksiyon: Haber API'sinden haber verilerini çeker
 async def fetch_newsapi_news():
     url = f"https://newsapi.org/v2/top-headlines?category=business&q=crypto&apiKey={NEWS_API_KEY}"
     async with aiohttp.ClientSession() as session:
@@ -677,6 +750,7 @@ async def fetch_newsapi_news():
                 return await response.json()
             return None
 
+# Fonksiyon: Haber özetini oluşturur
 async def summarize_news(title, description):
     prompt = f"Write a short summary of the following news:\n\nTitle: {title}\nDescription: {description}\n\nPrepare a concise summary for investors."
     try:
@@ -686,6 +760,7 @@ async def summarize_news(title, description):
         logger.error(f"❌ Summary generation error: {e}")
         return "⚠️ Summary generation failed."
 
+# Fonksiyon: Haberleri gösterir
 async def nw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("🚀 /news command triggered")
     news_data = await fetch_newsapi_news()
@@ -711,9 +786,11 @@ async def nw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if sent_count == 0:
         await update.message.reply_text("⚠️ No new news available.")
 
+# Fonksiyon: Haber linklerini gösterir
 async def rmore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧭 View news links with the /nw command.")
 
+# Fonksiyon: Backtest komutunu işler
 async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /bt <coin> (e.g., /bt BTC)")
@@ -723,7 +800,7 @@ async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Coin not found.")
         return
     df, _, _ = await fetch_ohlc_data(symbol, days=30)
-    if df is None or df.empty:
+    if df is none or df.empty:
         await update.message.reply_text("❌ Data not available.")
         return
     from ta.momentum import RSIIndicator
@@ -743,6 +820,7 @@ async def bt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"📈 {symbol} RSI + MA Backtest Result (30 days):\n✅ Buy count: {len(buy_points)}\n💰 Total Profit: ${pnl:.2f}"
     await update.message.reply_text(msg)
 
+# Fonksiyon: Premium planları gösterir
 async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 1 Month – $29.99", url="https://nowpayments.io/payment/?iid=5260731771")],
@@ -750,24 +828,25 @@ async def prem(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🟣 1 Year – $399.99", url="https://nowpayments.io/payment/?iid=4501340550")],
     ])
     msg = (
-    "👑 *Coinspace Premium Planları\\!*\n\n"
-    "⚡️ *Avantajlar:*\n"
-    "• Sınırsız kaldıraçlı AI sinyali \\(ücretsiz kullanıcılar günde sadece 2 alır\\)\n"
-    "• Tüm piyasa verilerine erişim\n"
-    "• Öncelikli destek & erken erişim özellikleri\n\n"
-    "*💳 Planlar:*\n"
-    "• 1 Ay: \\$29\\.99\n"
-    "• 3 Ay: \\$69\\.99\n"
-    "• 1 Yıl: \\$399\\.99\n\n"
-    "👉 *Yükseltmek için bir plan seçin ve ödeme yapın:*\n"
-    "\\[1 Aylık Ödeme\\]\\(https://nowpayments\\.io/payment/?iid=5260731771\\)\n"
-    "\\[3 Aylık Ödeme\\]\\(https://nowpayments\\.io/payment/?iid=4400895826\\)\n"
-    "\\[1 Yıllık Ödeme\\]\\(https://nowpayments\\.io/payment/?iid=4501340550\\)\n\n"
-    "✅ Ödemenin ardından `/prem` komutu ile aboneliğini aktif et\\."
-)
-    await update.message.reply_text(msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+        "👑 <b>Coinspace Premium Plans!</b>\n\n"
+        "⚡️ <b>Benefits:</b>\n"
+        "• Unlimited AI Leverage Signals (Free users get only 2 signals per day)\n"
+        "• Full market overview access\n"
+        "• Priority support & early feature access\n\n"
+        "💳 <b>Plans:</b>\n"
+        "1 Month: $29.99\n"
+        "3 Months: $69.99\n"
+        "1 Year: $399.99\n\n"
+        "👉 <b>To upgrade, select a plan and complete the payment:</b>\n"
+        "• <a href='https://nowpayments.io/payment/?iid=5260731771'>1 Month Payment</a>\n"
+        "• <a href='https://nowpayments.io/payment/?iid=4400895826'>3 Months Payment</a>\n"
+        "• <a href='https://nowpayments.io/payment/?iid=4501340550'>1 Year Payment</a>\n\n"
+        "✅ After payment, activate your subscription using the <code>/prem</code> command."
+    )
+    await update.message.reply_text(msg, parse_mode="HTML", reply_markup=keyboard, disable_web_page_preview=True)
 
 
+# Fonksiyon: Kullanıcı kabul şartlarını kabul eder
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -776,6 +855,7 @@ async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await query.edit_message_text("✅ Terms accepted. You can start using commands.")
 
+# Fonksiyon: Geri bildirimleri işler
 async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -788,33 +868,47 @@ async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     signals = load_signals()
     found = False
+
     for s in signals:
         if s.get("message_id") == message_id:
-            if feedback == "like":
-                if user_id not in s.setdefault("likes", []):
-                    s["likes"].append(user_id)
-                if user_id in s.get("dislikes", []):
-                    s["dislikes"].remove(user_id)
-            elif feedback == "dislike":
-                if user_id not in s.setdefault("dislikes", []):
-                    s["dislikes"].append(user_id)
-                if user_id in s.get("likes", []):
-                    s["likes"].remove(user_id)
             found = True
+            if user_id in s.get("likes", []) or user_id in s.get("dislikes", []):
+                logger.warning(f"feedback_handler: User {user_id} already provided feedback for message_id {message_id}")
+                await query.answer("❌ You have already provided feedback for this message.", show_alert=True)
+                return
+            if feedback == "like":
+                s.setdefault("likes", []).append(user_id)
+                logger.info(f"feedback_handler: User {user_id} liked message_id {message_id}")
+            elif feedback == "dislike":
+                s.setdefault("dislikes", []).append(user_id)
+                logger.info(f"feedback_handler: User {user_id} disliked message_id {message_id}")
             break
+
     if not found:
-        signals.append({"message_id": message_id, "likes": [user_id] if feedback == "like" else [], "dislikes": [user_id] if feedback == "dislike" else []})
+        signals.append({"message_id": message_id, "likes": [user_id] if feedback == "like" else [], "dislikes": [user_id] if feedback == "dislike" else [], "text": query.message.text})
+        logger.info(f"feedback_handler: New signal entry created for message_id {message_id} with feedback {feedback}")
+
     save_signals(signals)
     await query.edit_message_reply_markup(reply_markup=None)
-    await query.message.reply_text("✅ Thank you for your feedback.")
+    await query.message.reply_text("✅ Thank you for your feedback!")
 
+
+# Fonksiyon: AI sinyallerini gönderir ve geri bildirim butonları ekler
 async def send_ai_signal(update: Update, context: ContextTypes.DEFAULT_TYPE, signal_text: str):
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👍", callback_data="feedback:like"), InlineKeyboardButton("👎", callback_data="feedback:dislike")]])
-    message = await context.bot.send_message(chat_id=update.effective_chat.id, text=signal_text, reply_markup=keyboard)
-    signals = load_signals()
-    signals.append({"message_id": message.message_id, "text": signal_text, "likes": [], "dislikes": []})
-    save_signals(signals)
+    try:
+        logger.info(f"send_ai_signal: Preparing to send message for chat {update.effective_chat.id} with feedback buttons")
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("👍 Like", callback_data="feedback:like"), InlineKeyboardButton("👎 Dislike", callback_data="feedback:dislike")]])
+        message = await context.bot.send_message(chat_id=update.effective_chat.id, text=signal_text, reply_markup=keyboard)
+        logger.info(f"send_ai_signal: Message sent successfully for chat {update.effective_chat.id} with message_id {message.message_id}")
+        signals = load_signals()
+        signals.append({"message_id": message.message_id, "text": signal_text, "likes": [], "dislikes": []})
+        save_signals(signals)
+    except Exception as e:
+        logger.error(f"send_ai_signal error: {e}")
+        if update.message:
+            await update.message.reply_text("❌ Failed to send AI signal with feedback buttons. Please try again.")
 
+# Fonksiyon: Haberleri otomatik gönderir
 async def check_and_send_news(app):
     while True:
         news_data = await fetch_newsapi_news()
@@ -833,32 +927,12 @@ async def check_and_send_news(app):
                         logger.error(f"⚠️ News sending failed: {e}")
         await asyncio.sleep(7200)
 
+# Fonksiyon: Coin verilerini çeker
 async def fetch_coin_data(symbol):
     price = await fetch_price(symbol)
     return {"symbol": f"{symbol.upper()}USDT", "price": price} if price is not None else None
 
-async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    if not text.startswith("/ai"):
-        return
-    symbol = text.replace("/ai", "").strip().upper()
-    logger.info(f"ai_comment: Processing request for symbol {symbol}")
-    if not symbol or symbol not in symbol_to_id_map:
-        await update.message.reply_text("❌ Invalid coin symbol. Please use a valid coin traded on Binance (e.g., /ai BTC, /ai ETH).")
-        return
-    await update.message.reply_text("💬 Preparing AI comment...")
-    try:
-        price_data = await fetch_price(symbol)
-        if price_data is None:
-            await update.message.reply_text(f"❌ Failed to retrieve price data for {symbol}. Please try again.")
-            return
-        coin_data = {"symbol": f"{symbol}USDT", "price": price_data}
-        comment = await generate_ai_comment(coin_data)
-        await send_ai_signal(update, context, comment)
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error occurred during processing: {str(e)}")
-        logger.error(f"ai_comment error: {e}, symbol={symbol}, coin_data={coin_data}")
-
+# Fonksiyon: Botu çalıştırır
 async def run_bot():
     logger.info("🚀 Bot starting...")
     app = ApplicationBuilder().token(TOKEN).build()
@@ -882,6 +956,7 @@ async def run_bot():
     app.add_handler(CommandHandler("prem", prem))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CallbackQueryHandler(feedback_handler))
+    app.add_handler(CommandHandler("ai", ai_comment))
     app.add_error_handler(error_handler)
     asyncio.create_task(check_alerts(app))
     asyncio.create_task(check_and_send_news(app))
