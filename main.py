@@ -1,12 +1,17 @@
 from fastapi import FastAPI
 import asyncio
 from bot import run_bot, generate_ai_comment, fetch_price
+from api.payment_api import router as payment_router
+from api.premium_checker import check_and_notify_expired_premium  # 🔁 Otomatik kontrol ekleniyor
 
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
+    # 🤖 Telegram bot başlat
     asyncio.create_task(run_bot())
+    # ⏰ Premium süresi biten kullanıcıları kontrol eden görev
+    asyncio.create_task(check_and_notify_expired_premium())
 
 @app.get("/api")
 def root():
@@ -23,3 +28,6 @@ async def get_analysis(symbol: str):
         return {"analysis": analysis}
     except Exception as e:
         return {"error": str(e)}
+
+# 📌 API rota
+app.include_router(payment_router, prefix="/api")

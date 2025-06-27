@@ -18,6 +18,11 @@ import logging
 from dotenv import load_dotenv
 from functools import wraps
 from datetime import datetime, timedelta
+from telegram import Bot
+from telegram import Update
+from telegram.ext import ContextTypes
+
+
 
 # Logging configuration
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -68,9 +73,9 @@ def save_accepted_users(users):
 
 # Amaç: Kullanıcının kabul edilmiş olup olmadığını kontrol eder
 async def check_user_accepted(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    return update.effective_user.id in load_accepted_users()
-
-accepted_users = load_accepted_users()
+    user_id = update.effective_user.id
+    user_info = load_json("data/user_info.json")
+    return str(user_id) in user_info and user_info[str(user_id)].get("accepted") == True
 
 # Admin users
 # Amaç: Admin kullanıcılarını data/admins.json dosyasından yükler
@@ -84,14 +89,15 @@ def load_admin_users():
             return set()
 
 # Amaç: Admin kullanıcılarını data/admins.json dosyasına kaydeder
-def save_admin_users(users):
-    os.makedirs("data", exist_ok=True)
+def save_admin_users(admin_set):
     with open("data/admins.json", "w") as f:
-        json.dump(list(users), f)
+        json.dump(list(admin_set), f, indent=2)
+
 
 # Amaç: Kullanıcının admin olup olmadığını kontrol eder
 def check_admin(user_id):
-    return user_id in load_admin_users() or user_id == OWNER_CHAT_ID
+    return str(user_id) in load_admin_users() or user_id == OWNER_CHAT_ID
+
 
 # Premium users
 # Amaç: Premium kullanıcılarını data/premium_users.json dosyasından yükler
@@ -111,8 +117,27 @@ def save_premium_users(users):
         json.dump(list(users), f)
 
 # Amaç: Kullanıcının premium olup olmadığını kontrol eder
-def check_premium_status(user_id):
-    return user_id in load_premium_users()
+
+from datetime import datetime, date
+import json
+
+def check_premium_status(user_id: int) -> bool:
+    try:
+        with open("data/premium_users.json", "r") as f:
+            premium_users = json.load(f)
+        user_str = str(user_id)
+        if user_str not in premium_users:
+            return False
+        # Bitiş tarihini kontrol et
+        end_date_str = premium_users[user_str].get("end")
+        if not end_date_str:
+            return False
+        end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        return date.today() <= end_date
+    except Exception as e:
+        print(f"Premium kontrol hatası: {e}")
+        return False
+
 
 # News and signal files
 SENT_NEWS_FILE = "data/sent_news.json"
@@ -427,32 +452,47 @@ async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     if not text.startswith("/ai"):
         return
+
     symbol = text.replace("/ai", "").strip().upper()
-    logger.info(f"ai_comment: Received command for symbol {symbol} from user {update.effective_user.id}")
     user_id = update.effective_user.id
+
+    logger.info(f"ai_comment: Received command for symbol {symbol} from user {user_id}")
+
+    # PREMIUM KONTROLÜ
     if not check_premium_status(user_id):
         await update.message.reply_text("❌ This command (/ai) is only available for Premium users. Upgrade via /prem.")
         return
+
     if not symbol or symbol not in symbol_to_id_map:
-        logger.warning(f"ai_comment: Invalid symbol {symbol} for user {update.effective_user.id}")
-        await update.message.reply_text("❌ Invalid coin symbol. Please use a valid coin traded on Binance (e.g., /ai BTC, /ai ETH, /ai SOL, /ai BNB, /ai ADA, /ai XRP, /ai DOT, /ai LINK).")
+        logger.warning(f"ai_comment: Invalid symbol {symbol} for user {user_id}")
+        await update.message.reply_text(
+            "❌ Invalid coin symbol. Please use a valid coin traded on Binance (e.g., /ai BTC, /ai ETH, /ai SOL, /ai BNB, /ai ADA, /ai XRP, /ai DOT, /ai LINK)."
+        )
         return
+
     await update.message.reply_text("💬 Preparing AI comment...")
+
     try:
         logger.info(f"ai_comment: Fetching price for {symbol}")
         price_data = await fetch_price(symbol)
         if price_data is None:
             logger.error(f"ai_comment: Failed to fetch price for {symbol}")
-            await update.message.reply_text(f"❌ Failed to retrieve price data for {symbol}. Please check your internet connection or API key.")
+            await update.message.reply_text(
+                f"❌ Failed to retrieve price data for {symbol}. Please check your internet connection or API key."
+            )
             return
+
         coin_data = {"symbol": f"{symbol}USDT", "price": price_data}
         logger.info(f"ai_comment: Generating comment for {symbol}")
         comment = await generate_ai_comment(coin_data)
+
         logger.info(f"ai_comment: Comment generated, sending signal for {symbol} with feedback buttons")
         await send_ai_signal(update, context, comment)
+
     except Exception as e:
-        logger.error(f"ai_comment error: {e}, symbol={symbol}, coin_data={coin_data}")
+        logger.error(f"ai_comment error: {e}, symbol={symbol}")
         await update.message.reply_text(f"❌ Error occurred during processing: {str(e)}. Please try again later.")
+
 
 # Amaç: Kullanıcının portföyünü döndürür (simüle edilmiş)
 def get_portfolio(user_id):
@@ -491,6 +531,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     save_user(user_id)
     update_user_metadata(user_id)
+
+    # reply göndereceğimiz mesaj nesnesini belirle
+    message = update.message or (update.callback_query and update.callback_query.message)
+
     if not await check_user_accepted(update, context):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Understand", callback_data="accept_disclaimer")]])
         disclaimer_text = (
@@ -499,13 +543,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "These signals are for informational purposes only and do not constitute financial advice\\.\n\n"
             "Please confirm to proceed\\."
         )
-        await update.message.reply_text(disclaimer_text, reply_markup=keyboard, parse_mode="MarkdownV2")
-    else:
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📖 View Commands (/help)", callback_data="help")]])
+        if message:
+            await message.reply_text(disclaimer_text, reply_markup=keyboard, parse_mode="MarkdownV2")
+        return
 
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📖 View Commands (/help)", callback_data="help")]])
     msg = (
         "<b>👋 Welcome back to Coinspace Bot!</b>\n\n"
-        "<b>🚀 Your User ID:</b> <code>{user_id}</code>\n\n"
+        f"<b>🚀 Your User ID:</b> <code>{user_id}</code>\n\n"
         "<b>🚀 Get daily AI-supported trading signals, price alerts, portfolio tracking, and live market updates.</b>\n\n"
         "<b>🔐 Upgrade to Premium:</b>\n"
         "• Unlimited AI Leverage Signals (Free users get only 2 signals per day)\n"
@@ -521,9 +566,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔗 <a href='https://nowpayments.io/payment/?iid=4501340550'>1 Year Payment</a>\n\n"
         "✅ After payment, activate your subscription with the <b>/activate_premium</b> command.\n\n"
         "👇 Click the button below to view available commands:"
-    ).format(user_id=user_id)
+    )
 
-    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+    if message:
+        await message.reply_text(msg, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+
+
 
 # Amaç: Hata işleyicisi
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -920,15 +968,17 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = (
-        "<b>🔧 Admin Panel</b>\n\n"
-        "• <code>/broadcast</code> – Send a message to all users (Not implemented)\n"
-        "• <code>/users</code> – Show total registered users (Not implemented)\n"
-        "• <code>/make_admin <user_id></code> – Grant admin rights\n"
-        "• <code>/remove_admin <user_id></code> – Revoke admin rights\n"
-        "• <code>/make_premium <user_id></code> – Grant premium status\n"
-        "• <code>/remove_premium <user_id></code> – Revoke premium status\n"
-        "• <code>/premium_list</code> – List premium users"
-    )
+    "<b>🔧 Admin Panel</b>\n\n"
+    "• <code>/broadcast</code> – Send a message to all users (Not implemented)\n"
+    "• <code>/users</code> – Show total registered users (Not implemented)\n"
+    "• <code>/make_admin [user_id]</code> – Grant admin rights\n"
+    "• <code>/remove_admin [user_id]</code> – Revoke admin rights\n"
+    "• <code>/make_premium [user_id]</code> – Grant premium status\n"
+    "• <code>/remove_premium [user_id]</code> – Revoke premium status\n"
+    "• <code>/admin_list</code> – List admin users\n"
+    "• <code>/premium_list</code> – List premium users"
+)
+
     await update.message.reply_text(msg, parse_mode="HTML")
 
 # Amaç: Admin paneli ile kullanıcıyı admin yapar
@@ -937,17 +987,22 @@ async def make_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_admin(user_id):
         await update.message.reply_text("❌ You do not have admin privileges.")
         return
+
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /make_admin <user_id>")
         return
-    target_user_id = int(context.args[0])
+
+    target_user_id = context.args[0]  # string olarak tut (int'e çevirmeye gerek yok)
+
     admin_users = load_admin_users()
     if target_user_id not in admin_users:
-        admin_users.add(target_user_id)
-        save_admin_users(admin_users)
+        admin_users.add(target_user_id)  # ✅ .append değil .add
+        save_admin_users(list(admin_users))  # JSON için set'i listeye çevir
         await update.message.reply_text(f"✅ User {target_user_id} has been made an admin.")
     else:
         await update.message.reply_text(f"⚠️ User {target_user_id} is already an admin.")
+
+
 
 # Amaç: Admin paneli ile kullanıcının admin statüsünü kaldırır
 async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -958,7 +1013,7 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /remove_admin <user_id>")
         return
-    target_user_id = int(context.args[0])
+    target_user_id = context.args[0]  # string olarak alıyoruz
     admin_users = load_admin_users()
     if target_user_id in admin_users:
         admin_users.remove(target_user_id)
@@ -967,23 +1022,40 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"⚠️ User {target_user_id} is not an admin.")
 
+
+
 # Amaç: Admin paneli ile kullanıcıyı premium yapar
+from datetime import datetime, timedelta  # En üstte olmalı
 async def make_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
     if not check_admin(user_id):
         await update.message.reply_text("❌ You do not have admin privileges.")
         return
+
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /make_premium <user_id>")
         return
-    target_user_id = int(context.args[0])
-    premium_users = load_premium_users()
-    if target_user_id not in premium_users:
-        premium_users.add(target_user_id)
-        save_premium_users(premium_users)
-        await update.message.reply_text(f"✅ User {target_user_id} has been made a Premium user.")
-    else:
+
+    target_user_id = str(context.args[0])  # JSON'da string olarak tutulur
+
+    premium_users = load_json("data/premium_users.json")
+
+    if target_user_id in premium_users:
         await update.message.reply_text(f"⚠️ User {target_user_id} is already a Premium user.")
+        return
+
+    today = datetime.today().date()
+    end_date = today + timedelta(days=30)
+
+    premium_users[target_user_id] = {
+        "start": str(today),
+        "end": str(end_date)
+    }
+
+    save_json("data/premium_users.json", premium_users)
+    await update.message.reply_text(f"✅ User {target_user_id} has been granted Premium access until {end_date}.")
+
 
 # Amaç: Admin paneli ile kullanıcının premium statüsünü kaldırır
 async def remove_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -991,17 +1063,22 @@ async def remove_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_admin(user_id):
         await update.message.reply_text("❌ You do not have admin privileges.")
         return
+
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /remove_premium <user_id>")
         return
-    target_user_id = int(context.args[0])
-    premium_users = load_premium_users()
+
+    target_user_id = str(int(context.args[0]))  # string olarak json key
+
+    premium_users = load_json("data/premium_users.json")
+
     if target_user_id in premium_users:
-        premium_users.remove(target_user_id)
-        save_premium_users(premium_users)
+        del premium_users[target_user_id]
+        save_json("data/premium_users.json", premium_users)
         await update.message.reply_text(f"✅ Premium status removed from user {target_user_id}.")
     else:
         await update.message.reply_text(f"⚠️ User {target_user_id} is not a Premium user.")
+
 
 # Amaç: Admin gerektiren fonksiyonlar için dekoratör sağlar
 def admin_required(func):
@@ -1113,6 +1190,16 @@ def update_user_metadata(user_id):
     users[user_id]["last_active"] = now
     save_json("data/users.json", users)
 
+bot_instance = Bot(token=TOKEN) 
+async def notify_user_if_expired(user_id: int):
+    try:
+        await bot_instance.send_message(
+            chat_id=user_id,
+            text="⚠️ Your premium subscription has expired. Use /premium to renew it.",
+        )
+    except Exception as e:
+        print(f"Error while notifying user {user_id}: {e}")
+
 # Amaç: Yaygın mesaj gönderir
 @admin_required
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1140,12 +1227,29 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Amaç: Kullanıcı kabul şartlarını kabul eder
 async def accept_disclaimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    # JSON'a işaretleme
+    user_info = load_json("data/user_info.json")
+    user_info[str(user_id)] = {"accepted": True}
+    save_json("data/user_info.json", user_info)
+
+    # accepted_users.json listesine ekle
+    accepted_path = "data/accepted_users.json"
+    accepted_users = load_json(accepted_path)
+    if not isinstance(accepted_users, list):
+        accepted_users = []
+
+    if user_id not in accepted_users:
+        accepted_users.append(user_id)
+        save_json(accepted_path, accepted_users)
+
     query = update.callback_query
-    user_id = query.from_user.id
-    accepted_users.add(user_id)
-    save_accepted_users(accepted_users)
     await query.answer()
-    await query.edit_message_text("✅ Terms accepted. You can start using commands.")
+    await query.edit_message_text("✅ Terms accepted. Welcome!")
+
+    # /start komutu gibi karşılama mesajını manuel tetikle
+    await start(update, context)
 
 # Amaç: Geri bildirimleri işler
 async def feedback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1226,16 +1330,49 @@ async def fetch_coin_data(symbol):
 # Amaç: Premium kullanıcı listesini gösterir
 @admin_required
 async def premium_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = load_premium_users()
-    now = datetime.utcnow()
-    lines = []
-    for user_id in data:
-        lines.append(f"👤 {user_id} – ✅ Active")  # Senin kodunda süre bilgisi yok, bu yüzden sadece aktif olarak gösteriliyor
+    user_id = update.effective_user.id
+    if not check_admin(user_id):
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
 
-    msg = "<b>💎 Premium Users</b>\n\n" + "\n".join(lines)
+    premium_users = load_json("data/premium_users.json")
+    if not premium_users:
+        await update.message.reply_text("❌ No premium users found.")
+        return
+
+    msg = "<b>💎 Premium Users List</b>\n\n"
+    for uid, info in premium_users.items():
+        msg += f"• <code>{uid}</code> – Valid until: <b>{info.get('end', 'N/A')}</b>\n"
+
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+# Amaç: Admin Listesini gösterir.
+ADMIN_FILE = "data/admins.json"
+async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    admins = load_json(ADMIN_FILE)
+
+    if str(user_id) not in admins:
+        await update.message.reply_text("❌ You do not have admin privileges.")
+        return
+
+    if not admins:
+        await update.message.reply_text("⚠️ No admins found.")
+        return
+
+    msg = "<b>👮 Admin Users:</b>\n"
+    for admin_id in admins:
+        try:
+            user = await context.bot.get_chat(int(admin_id))
+            name = user.full_name
+            msg += f"• {name} (<code>{admin_id}</code>)\n"
+        except Exception:
+            msg += f"• Unknown (<code>{admin_id}</code>)\n"
+
     await update.message.reply_text(msg, parse_mode="HTML")
 
 # Amaç: Premium sürelerini kontrol eder ve bildirim gönderir
+from datetime import datetime
 async def check_premium_expiry(bot: Bot):
     data = load_premium_users()
     now = datetime.utcnow()
@@ -1278,6 +1415,7 @@ async def run_bot():
     app.add_handler(CommandHandler("user_info", user_info))
     app.add_handler(CommandHandler("make_admin", make_admin))
     app.add_handler(CommandHandler("remove_admin", remove_admin))
+    app.add_handler(CommandHandler("admin_list", admin_list))
     app.add_handler(CommandHandler("make_premium", make_premium))
     app.add_handler(CommandHandler("remove_premium", remove_premium))
     app.add_handler(CommandHandler("users", users))
