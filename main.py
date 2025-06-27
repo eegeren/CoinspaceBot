@@ -34,5 +34,6 @@ async def get_analysis(symbol: str):
     except Exception as e:
         return {"error": str(e)}
 
-# API rotalarını ekle
-app.include_router(train_router)
+# Eğitim ve ödeme rotaları
+app.include_router(train_router, prefix="/api")
+app.include_router(payment_router, prefix="/api")

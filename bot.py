@@ -1320,7 +1320,7 @@ async def check_and_send_news(app):
                         save_sent_urls()
                     except Exception as e:
                         logger.error(f"⚠️ News sending failed: {e}")
-        await asyncio.sleep(2700)
+        await asyncio.sleep(1800)
 
 # Amaç: Coin verilerini çeker
 async def fetch_coin_data(symbol):
