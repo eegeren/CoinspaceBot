@@ -2,6 +2,8 @@ import asyncio
 import datetime
 from bot import load_json, save_json, notify_user_if_expired  # notify_user_if_expired fonksiyonu lazim
 from telegram import Bot
+from dotenv import load_dotenv
+
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
