@@ -35,5 +35,5 @@ async def get_analysis(symbol: str):
         return {"error": str(e)}
 
 # API rotalarını ekle
-app.include_router(payment_router, prefix="/api")
+app.include_router(train_router, prefix="/api")
 app.include_router(train_router)
