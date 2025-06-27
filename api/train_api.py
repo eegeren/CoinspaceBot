@@ -4,6 +4,6 @@ from utils.train_utils import run_training
 router = APIRouter()
 
 @router.post("/api/train")
-def train_models():
-    result = run_training()
-    return result
+async def train_model():
+    run_training()
+    return {"status": "Training started"}
