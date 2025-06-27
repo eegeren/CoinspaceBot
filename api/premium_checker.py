@@ -1,3 +1,4 @@
+import os
 import asyncio
 import datetime
 from bot import load_json, save_json, notify_user_if_expired  # notify_user_if_expired fonksiyonu lazim
@@ -6,8 +7,10 @@ from dotenv import load_dotenv
 
 
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TELEGRAM_TOKEN)
+
+
 async def check_and_notify_expired_premium():
     while True:
         print("🔁 Checking for expired premium users...")

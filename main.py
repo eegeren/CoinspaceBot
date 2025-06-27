@@ -1,16 +1,21 @@
 from fastapi import FastAPI
 import asyncio
+import os
+from dotenv import load_dotenv
+
 from bot import run_bot, generate_ai_comment, fetch_price
 from api.payment_api import router as payment_router
-from api.premium_checker import check_and_notify_expired_premium  # 🔁 Otomatik kontrol ekleniyor
+from api.premium_checker import check_and_notify_expired_premium
+from api.train_api import router as train_router  # Eğitim API'si
+
+# .env dosyasını yükle
+load_dotenv()
 
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    # 🤖 Telegram bot başlat
     asyncio.create_task(run_bot())
-    # ⏰ Premium süresi biten kullanıcıları kontrol eden görev
     asyncio.create_task(check_and_notify_expired_premium())
 
 @app.get("/api")
@@ -29,5 +34,6 @@ async def get_analysis(symbol: str):
     except Exception as e:
         return {"error": str(e)}
 
-# 📌 API rota
+# API rotalarını ekle
 app.include_router(payment_router, prefix="/api")
+app.include_router(train_router)
