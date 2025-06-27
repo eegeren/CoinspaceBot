@@ -3,9 +3,9 @@ import datetime
 from bot import load_json, save_json, notify_user_if_expired  # notify_user_if_expired fonksiyonu lazim
 from telegram import Bot
 
-TELEGRAM_TOKEN = "7021119338:AAF7i5HCFOce6-9kESFzpkk51Nem7HZjckA"
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 bot = Bot(token=TELEGRAM_TOKEN)
-
 async def check_and_notify_expired_premium():
     while True:
         print("🔁 Checking for expired premium users...")
