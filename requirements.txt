@@ -15,4 +15,7 @@ joblib
 pyrogram
 tgcrypto
 nest_asyncio
-
+pandas
+numpy
+python-binance
+scikit-learn
