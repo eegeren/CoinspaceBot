@@ -1,43 +1,47 @@
-
 import pandas as pd
-import numpy as np
+import joblib
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, mean_squared_error
-import joblib
-import pickle
 
 def train():
-    df = pd.read_csv("training_data.csv", index_col="timestamp", parse_dates=True)
+    print("📥 Veriler yükleniyor...")
+    df = pd.read_csv("training_data.csv")  # open_time datetime olduğundan çıkarılmalı
 
-    feature_cols = ["open", "high", "low", "close", "volume", "rsi", "macd", "sma_20", "atr"]
-    X = df[feature_cols]
-    y_class = df["target"]
-    y_tp = df["TP_PCT"]
-    y_sl = df["SL_PCT"]
+    print("📊 Özellik sütunları:", df.columns.tolist())
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y_class, test_size=0.2, random_state=42)
+    # open_time dışlanıyor çünkü sayısal değil
+    features = [col for col in df.columns if col not in ["open_time", "target", "tp_pct", "sl_pct"]]
+    X = df[features]
+    y = df["target"]
+    tp_y = df["tp_pct"]
+    sl_y = df["sl_pct"]
+
+    # Eğitim ve test bölünmesi
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+    # Sınıflandırma modeli
     clf = RandomForestClassifier(n_estimators=100, random_state=42)
     clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
+    preds = clf.predict(X_test)
+    acc = accuracy_score(y_test, preds)
     print(f"🎯 Classification Accuracy: {acc:.2f}")
 
-    # TP Model
+    # TP regresyon modeli
     tp_model = RandomForestRegressor(n_estimators=100, random_state=42)
-    tp_model.fit(X, y_tp)
+    tp_model.fit(X_train, tp_y)
 
-    # SL Model
+    # SL regresyon modeli
     sl_model = RandomForestRegressor(n_estimators=100, random_state=42)
-    sl_model.fit(X, y_sl)
+    sl_model.fit(X_train, sl_y)
 
-    # Save models
+    # Modelleri kaydet
     joblib.dump(clf, "model.pkl")
     joblib.dump(tp_model, "tp_model.pkl")
     joblib.dump(sl_model, "sl_model.pkl")
 
-    with open("features_list.pkl", "wb") as f:
-        pickle.dump(feature_cols, f)
+    # Özellik listesini kaydet
+    joblib.dump(features, "features_list.pkl")
 
     print("✅ Modeller ve özellik listesi kaydedildi.")
 

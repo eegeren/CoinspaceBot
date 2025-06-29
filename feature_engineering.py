@@ -1,52 +1,52 @@
-
 import pandas as pd
+from ta.momentum import RSIIndicator, StochasticOscillator
+from ta.trend import MACD, CCIIndicator, ADXIndicator
+from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator
+from ta.volatility import AverageTrueRange, BollingerBands
 import numpy as np
-from ta.trend import MACD, SMAIndicator
-from ta.momentum import RSIIndicator
-from ta.volatility import AverageTrueRange
 
-def add_indicators(df):
-    df['rsi'] = RSIIndicator(close=df['close'], window=14).rsi()
-    df['macd'] = MACD(close=df['close']).macd_diff()
-    df['sma_20'] = SMAIndicator(close=df['close'], window=20).sma_indicator()
-    df['atr'] = AverageTrueRange(high=df['high'], low=df['low'], close=df['close']).average_true_range()
-    return df
+# Veriyi yükle
+df = pd.read_csv("historical_data.csv")
 
-def generate_targets(df, tp_pct=0.02, sl_pct=0.01, horizon=6):
-    df['target'] = 0  # 1 = BUY, -1 = SELL, 0 = HOLD
-    df['TP_PCT'] = 0.0
-    df['SL_PCT'] = 0.0
+# Teknik göstergeleri hesapla
+df["RSI"] = RSIIndicator(close=df["close"]).rsi()
+macd = MACD(close=df["close"])
+df["MACD"] = macd.macd()
+df["Signal"] = macd.macd_signal()
+df["MA_5"] = df["close"].rolling(window=5).mean()
+df["MA_20"] = df["close"].rolling(window=20).mean()
+df["Volatility"] = df["close"].rolling(window=10).std()
+df["Momentum"] = df["close"].diff()
+df["Price_Change"] = df["close"].pct_change()
+df["Volume_Change"] = df["volume"].pct_change()
+df["CCI"] = CCIIndicator(high=df["high"], low=df["low"], close=df["close"]).cci()
+df["ADX"] = ADXIndicator(high=df["high"], low=df["low"], close=df["close"]).adx()
+df["OBV"] = OnBalanceVolumeIndicator(close=df["close"], volume=df["volume"]).on_balance_volume()
+df["CMF"] = ChaikinMoneyFlowIndicator(high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]).chaikin_money_flow()
+df["ATR"] = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"]).average_true_range()
+df["Force_Index"] = df["close"].diff() * df["volume"]
+stoch = StochasticOscillator(high=df["high"], low=df["low"], close=df["close"])
+df["Stoch_K"] = stoch.stoch()
+df["Stoch_D"] = stoch.stoch_signal()
+bb = BollingerBands(close=df["close"])
+df["BB_Band_Width"] = bb.bollinger_hband() - bb.bollinger_lband()
+df["Tenkan"] = (df["high"].rolling(window=9).max() + df["low"].rolling(window=9).min()) / 2
+df["Kijun"] = (df["high"].rolling(window=26).max() + df["low"].rolling(window=26).min()) / 2
+df["Senkou_A"] = (df["Tenkan"] + df["Kijun"]) / 2
+df["Senkou_B"] = (df["high"].rolling(window=52).max() + df["low"].rolling(window=52).min()) / 2
 
-    for i in range(len(df) - horizon):
-        future_prices = df['close'].iloc[i+1:i+1+horizon].values
-        entry_price = df['close'].iloc[i]
-        tp_price = entry_price * (1 + tp_pct)
-        sl_price = entry_price * (1 - sl_pct)
+# Hedef değişkenleri oluştur
+future_window = 12  # örneğin 12 saatlik hareketi tahmin et
+df["future_return"] = df["close"].shift(-future_window) / df["close"] - 1
+df["target"] = (df["future_return"] > 0).astype(int)
 
-        hit_tp = np.any(future_prices >= tp_price)
-        hit_sl = np.any(future_prices <= sl_price)
+# TP ve SL yüzdesi (pozisyon sonrası maksimum kar ve zarar)
+df["tp_pct"] = (df["high"].rolling(window=future_window).max().shift(-future_window) / df["close"]) - 1
+df["sl_pct"] = (df["low"].rolling(window=future_window).min().shift(-future_window) / df["close"]) - 1
 
-        if hit_tp and not hit_sl:
-            df.at[df.index[i], 'target'] = 1
-        elif hit_sl and not hit_tp:
-            df.at[df.index[i], 'target'] = -1
-        elif hit_tp and hit_sl:
-            tp_index = np.argmax(future_prices >= tp_price)
-            sl_index = np.argmax(future_prices <= sl_price)
-            df.at[df.index[i], 'target'] = 1 if tp_index < sl_index else -1
+# Temizlik
+df.dropna(inplace=True)
 
-        df.at[df.index[i], 'TP_PCT'] = (tp_price - entry_price) / entry_price
-        df.at[df.index[i], 'SL_PCT'] = (entry_price - sl_price) / entry_price
-
-    return df
-
-def main():
-    df = pd.read_csv("raw_data.csv", index_col="timestamp", parse_dates=True)
-    df = add_indicators(df)
-    df = generate_targets(df)
-    df.dropna(inplace=True)
-    df.to_csv("training_data.csv")
-    print("✅ Göstergeler ve hedefler oluşturuldu: training_data.csv")
-
-if __name__ == "__main__":
-    main()
+# Kaydet
+df.to_csv("training_data.csv", index=False)
+print("✅ Feature engineering complete. Saved to training_data.csv")
