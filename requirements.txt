@@ -8,9 +8,7 @@ matplotlib
 yfinance
 openai>=1.10.0
 ta
-fastapi 
-scikit-learn 
-yfinance 
+scikit-learn
 joblib
 pyrogram
 tgcrypto

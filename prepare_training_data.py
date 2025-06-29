@@ -11,27 +11,25 @@ limit = 1000
 lookback_hours = 24 * 365
 
 def fetch_binance_ohlcv(symbol, interval, lookback_hours):
-    url = f"https://api.binance.com/api/v3/klines"
+    url = "https://api.binance.com/api/v3/klines"
     all_data = []
     end_time = int(time.time() * 1000)
-
     while len(all_data) * int(interval[:-1]) < lookback_hours:
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit,
-            "endTime": end_time
-        }
-        response = requests.get(url, params=params)
-        if response.status_code != 200:
-            raise Exception(f"Binance API error: {response.text}")
-        data = response.json()
-        if not data:
+        params = {"symbol": symbol, "interval": interval, "limit": limit, "endTime": end_time}
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            if not data:
+                break
+            all_data = data + all_data
+            end_time = data[0][0] - 1
+            time.sleep(0.2)
+        except requests.exceptions.RequestException as e:
+            print(f"❌ API hatası: {e}")
             break
-        all_data = data + all_data
-        end_time = data[0][0] - 1
-        time.sleep(0.2)
-
+    if not all_data:
+        raise ValueError("❌ Veri çekilemedi!")
     df = pd.DataFrame(all_data, columns=[
         "timestamp", "open", "high", "low", "close", "volume",
         "close_time", "quote_asset_volume", "num_trades",
@@ -76,7 +74,6 @@ def label_rows(df, tp_pct=0.015, sl_pct=0.01, max_horizon=6):
         labels.append(label)
         tp_values.append(tp_level)
         sl_values.append(sl_level)
-
     pad = [None] * max_horizon
     df["Label"] = labels + pad
     df["TP"] = tp_values + pad
@@ -89,11 +86,8 @@ print("📊 Teknik göstergeler hesaplanıyor...")
 df = add_indicators(df)
 print("🏷️ TP/SL etiketleri oluşturuluyor...")
 df = label_rows(df)
-
-# Temizleme
 df = df.dropna(subset=["Label", "TP", "SL"])
 features = ["RSI", "MACD", "Signal", "MA_5", "MA_20", "Volatility", "Momentum", "Price_Change", "Volume_Change"]
 final_df = df[features + ["Label", "TP", "SL", "close"]].dropna()
-
 final_df.to_csv("training_data.csv", index=False)
 print(f"✅ Eğitim verisi kaydedildi: training_data.csv ({len(final_df)} satır)")

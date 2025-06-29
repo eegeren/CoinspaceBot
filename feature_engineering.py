@@ -4,9 +4,21 @@ from ta.trend import MACD, CCIIndicator, ADXIndicator
 from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 import numpy as np
+import os
 
 # Veriyi yükle
-df = pd.read_csv("historical_data.csv")
+DATA_FILE = "historical_data.csv"
+
+if not os.path.exists(DATA_FILE):
+    raise FileNotFoundError(f"❌ {DATA_FILE} bulunamadı!")
+
+df = pd.read_csv(DATA_FILE)
+
+# Gerekli sütunları kontrol et
+required_cols = ["open_time", "open", "high", "low", "close", "volume"]
+missing_cols = [col for col in required_cols if col not in df.columns]
+if missing_cols:
+    raise ValueError(f"❌ Eksik sütunlar: {missing_cols}")
 
 # Teknik göstergeleri hesapla
 df["RSI"] = RSIIndicator(close=df["close"]).rsi()
@@ -40,7 +52,7 @@ future_window = 12  # örneğin 12 saatlik hareketi tahmin et
 df["future_return"] = df["close"].shift(-future_window) / df["close"] - 1
 df["target"] = (df["future_return"] > 0).astype(int)
 
-# TP ve SL yüzdesi (pozisyon sonrası maksimum kar ve zarar)
+# TP ve SL yüzdesi
 df["tp_pct"] = (df["high"].rolling(window=future_window).max().shift(-future_window) / df["close"]) - 1
 df["sl_pct"] = (df["low"].rolling(window=future_window).min().shift(-future_window) / df["close"]) - 1
 
@@ -48,5 +60,8 @@ df["sl_pct"] = (df["low"].rolling(window=future_window).min().shift(-future_wind
 df.dropna(inplace=True)
 
 # Kaydet
-df.to_csv("training_data.csv", index=False)
-print("✅ Feature engineering complete. Saved to training_data.csv")
+try:
+    df.to_csv("training_data.csv", index=False)
+    print("✅ Özellik mühendisliği tamamlandı. training_data.csv'ye kaydedildi.")
+except Exception as e:
+    print(f"❌ Dosya kaydetme hatası: {e}")
