@@ -15,4 +15,4 @@ joblib
 pyrogram
 tgcrypto
 nest_asyncio
-
+binance
