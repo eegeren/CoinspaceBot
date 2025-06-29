@@ -13,5 +13,5 @@ joblib
 pyrogram
 tgcrypto
 nest_asyncio
-binance
+python-binance
 cryptography
