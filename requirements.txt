@@ -16,3 +16,4 @@ pyrogram
 tgcrypto
 nest_asyncio
 binance
+cryptography
