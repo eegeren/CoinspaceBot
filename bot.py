@@ -1,8 +1,8 @@
 import os
 import asyncio
 import aiohttp
-from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton, Bot, ChatMemberUpdated
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, ChatMemberHandler
+from telegram import Update, InputFile, InlineKeyboardMarkup, InlineKeyboardButton, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 import matplotlib.pyplot as plt
 import io
 import json
@@ -16,7 +16,6 @@ from ta.momentum import StochasticOscillator
 from ta.volume import OnBalanceVolumeIndicator, ChaikinMoneyFlowIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 from openai import AsyncOpenAI
-import numpy as np
 from urllib.parse import urlparse, urlunparse
 from datetime import datetime, timedelta
 from ta.momentum import RSIIndicator
@@ -32,6 +31,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID", "0")
@@ -40,6 +40,7 @@ OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID", "0")
 required_env_vars = {
     "BOT_TOKEN": TOKEN,
     "BINANCE_API_KEY": BINANCE_API_KEY,
+    "BINANCE_API_SECRET": BINANCE_API_SECRET,
     "OPENAI_API_KEY": OPENAI_API_KEY,
     "NEWS_API_KEY": NEWS_API_KEY,
 }
@@ -48,7 +49,7 @@ for var_name, var_value in required_env_vars.items():
         raise ValueError(f"❌ {var_name} environment variable is missing!")
 
 # Initialize clients
-client = BinanceClient(BINANCE_API_KEY, os.getenv("BINANCE_API_SECRET"))
+client = BinanceClient(BINANCE_API_KEY, BINANCE_API_SECRET)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # Load machine learning models and features
@@ -82,7 +83,7 @@ SENT_NEWS_FILE = "data/sent_news.json"
 SIGNAL_FILE = "data/signals.json"
 NEWS_SETTINGS_FILE = "data/news_settings.json"
 
-# Load JSON data
+# JSON file operations
 def load_json(filename, default=None):
     try:
         with open(filename, "r") as f:
@@ -100,12 +101,6 @@ def save_json(file_path, data):
         logger.error(f"❌ Error writing to {file_path}: {e}")
 
 # User management
-def load_accepted_users():
-    return set(load_json("data/accepted_users.json", []))
-
-def save_accepted_users(users):
-    save_json("data/accepted_users.json", list(users))
-
 def load_admin_users():
     return set(load_json("data/admins.json", []))
 
@@ -138,7 +133,7 @@ def save_news_settings(settings):
 
 # Portfolio management
 def get_portfolio(user_id):
-    return load_json("data/portfolios.json").get(str(user_id), {})
+    return load_json("data/portfolios.json", {}).get(str(user_id), {})
 
 def add_coin(user_id, symbol, amount, buy_price=None):
     users = load_json("data/portfolios.json", {})
@@ -186,7 +181,7 @@ def add_alert(user_id, symbol, target_price):
     user_id_str = str(user_id)
     if user_id_str not in alerts:
         alerts[user_id_str] = []
-    alerts[user_id_str].append({"symbol": symbol.upper(), "target_price": target_price, "user_id": user_id})
+    alerts[user_id_str].append({"symbol": symbol.upper(), "target_price": target_price})
     save_json("data/alerts.json", alerts)
     return True
 
@@ -241,7 +236,7 @@ async def load_symbol_map():
                         for symbol in data["symbols"]
                         if symbol["status"] == "TRADING" and symbol["symbol"].endswith("USDT")
                     })
-                    logger.info(f"✅ Coin symbols loaded: {list(symbol_to_id_map.keys())[:5]}...")
+                    logger.info(f"✅ Loaded {len(symbol_to_id_map)} coin symbols")
                 else:
                     logger.error(f"❌ Failed to fetch coin list: status={response.status}")
                     symbol_to_id_map = {"BTC": "BTCUSDT", "ETH": "ETHUSDT"}
@@ -326,7 +321,6 @@ def prepare_features(df):
 
         features_df = pd.DataFrame(index=df.index)
         
-        # Teknik göstergeler
         features_df["RSI"] = RSIIndicator(close=close).rsi()
         macd = MACD(close=close)
         features_df["MACD"] = macd.macd_diff()
@@ -353,7 +347,7 @@ def prepare_features(df):
         features_df["Kijun"] = ichimoku.ichimoku_base_line()
         features_df["Senkou_A"] = ichimoku.ichimoku_a()
         features_df["Senkou_B"] = ichimoku.ichimoku_b()
-        features_df["future_return"] = 0.0  # Model eğitimine bağlı olarak kaldırılabilir
+        features_df["future_return"] = 0.0
 
         features_df.fillna(0, inplace=True)
         logger.info(f"Features prepared: {features_df.columns.tolist()}")
@@ -425,10 +419,9 @@ async def generate_ai_comment(symbol: str) -> str:
             comment_lines.append("🟥 Price is below MA — potential weakness.")
 
         rr_ratio = round(abs(tp_pct / sl_pct), 2) if tp_pct and sl_pct else "N/A"
-        if isinstance(rr_ratio, float):
-            risk_level = "🔴 High Risk" if rr_ratio < 1 else ("🟡 Medium Risk" if rr_ratio < 2 else "🟢 Low Risk")
-        else:
-            risk_level = "❓ Unknown Risk"
+        risk_level = "🔴 High Risk" if isinstance(rr_ratio, float) and rr_ratio < 1 else (
+            "🟡 Medium Risk" if isinstance(rr_ratio, float) and rr_ratio < 2 else "🟢 Low Risk"
+        )
 
         ai_signal = "📈 BUY" if prediction == 1 else "📉 SELL"
         tp_text = f"🎯 TP: ${tp:.2f} (+{tp_pct:.2f}%)" if tp_pct else "❌ TP prediction failed."
@@ -461,7 +454,8 @@ async def send_ai_signal(update: Update, context: ContextTypes.DEFAULT_TYPE, sig
         message = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=signal_text,
-            reply_markup=keyboard
+            reply_markup=keyboard,
+            parse_mode="Markdown"
         )
         signals = load_json(SIGNAL_FILE, [])
         signals.append({"message_id": message.message_id, "text": signal_text, "likes": [], "dislikes": []})
@@ -493,9 +487,10 @@ async def fetch_newsapi_news():
                         } for a in data.get("articles", [])
                     ]
                 logger.error(f"❌ NewsAPI status: {response.status}")
+                return []
     except Exception as e:
         logger.error(f"❌ NewsAPI fetch error: {e}")
-    return []
+        return []
 
 async def fetch_rss_feed(session, rss_url, source_name):
     try:
@@ -512,9 +507,10 @@ async def fetch_rss_feed(session, rss_url, source_name):
                     } for item in data.get("items", [])
                 ]
             logger.warning(f"⚠️ {source_name} RSS status: {response.status}")
+            return []
     except Exception as e:
         logger.error(f"❌ {source_name} RSS error: {e}")
-    return []
+        return []
 
 async def summarize_news(title, description):
     prompt = f"Summarize the following news article for investors:\n\nTitle: {title}\nDescription: {description}\n\nProvide a brief summary."
@@ -562,7 +558,7 @@ async def send_periodic_news(app):
         settings = load_news_settings()
         if not settings.get("enabled", False):
             logger.info("🛑 Periodic news disabled.")
-            await asyncio.sleep(3600)  # 1 saat bekle
+            await asyncio.sleep(3600)
             continue
         users = load_json("data/users.json", {})
         articles = await fetch_all_crypto_news()
@@ -598,8 +594,7 @@ async def send_periodic_news(app):
             logger.info("⚠️ No new news sent in periodic update.")
         else:
             logger.info(f"✅ Sent {sent_count} news articles to users.")
-
-        await asyncio.sleep(3600)  # 1 saat bekle
+        await asyncio.sleep(3600)
 
 # Background tasks
 async def check_alerts(app):
@@ -1034,7 +1029,7 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = "*👮 Admin Users:*\n"
     for admin_id in admins:
-        msg += f"• `{admin_id}` \\- {admin_id}\n"
+        msg += f"• `{admin_id}`\n"
     await update.effective_message.reply_text(msg, parse_mode="MarkdownV2")
 
 async def make_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
