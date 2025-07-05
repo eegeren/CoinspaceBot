@@ -36,7 +36,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID", "0")
 
-# Validate environment variables with fallback
+# Validate required environment variables
 required_env_vars = {
     "BOT_TOKEN": TOKEN,
     "BINANCE_API_KEY": BINANCE_API_KEY,
@@ -48,7 +48,7 @@ for var_name, var_value in required_env_vars.items():
         logger.error(f"❌ {var_name} environment variable is missing!")
         raise ValueError(f"❌ {var_name} environment variable is missing!")
 
-# Initialize Binance client with fallback for BINANCE_API_SECRET
+# Initialize Binance client with fallback
 try:
     client = BinanceClient(BINANCE_API_KEY, BINANCE_API_SECRET if BINANCE_API_SECRET else "")
 except Exception as e:
