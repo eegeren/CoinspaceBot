@@ -666,7 +666,7 @@ async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Activate a premium subscription using a payment ID
 async def activate_premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) != 1:
-        await update.effective_message.reply_text *("❌ Usage: /activate_premium <payment_id>", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text("❌ Usage: /activate_premium <payment_id>", parse_mode="MarkdownV2")
         return
     payment_id = context.args[0]
     user_id = str(update.effective_user.id)
