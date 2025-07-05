@@ -21,8 +21,14 @@ def train():
     tp_y = df["tp_pct"]
     sl_y = df["sl_pct"]
 
-    # Eğitim ve test bölünmesi
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+    # Eğitim ve test verisini bölme
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    tp_train, tp_test = train_test_split(tp_y, test_size=0.2, random_state=42)
+    sl_train, sl_test = train_test_split(sl_y, test_size=0.2, random_state=42)
+
+    # Boyutların eşleşmesini kontrol et
+    assert X_train.shape[0] == tp_train.shape[0], f"Mismatch: {X_train.shape[0]} != {tp_train.shape[0]}"
+    assert X_train.shape[0] == sl_train.shape[0], f"Mismatch: {X_train.shape[0]} != {sl_train.shape[0]}"
 
     # Sınıflandırma modeli
     clf = RandomForestClassifier(n_estimators=100, random_state=42)
@@ -33,11 +39,11 @@ def train():
 
     # TP regresyon modeli
     tp_model = RandomForestRegressor(n_estimators=100, random_state=42)
-    tp_model.fit(X_train, tp_y)
+    tp_model.fit(X_train, tp_train)
 
     # SL regresyon modeli
     sl_model = RandomForestRegressor(n_estimators=100, random_state=42)
-    sl_model.fit(X_train, sl_y)
+    sl_model.fit(X_train, sl_train)
 
     # Modelleri ve özellik listesini kaydet
     try:

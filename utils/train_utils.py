@@ -85,6 +85,10 @@ def run_training(csv_path="training_data.csv"):
     df["TP_PCT"] = ((df["TP"] - close) / close) * 100
     df["SL_PCT"] = ((close - df["SL"]) / close) * 100
 
+    # 🚫 Mantıksız küçük ve büyük değerleri filtrele
+    df = df[(df["TP_PCT"] > 0.3) & (df["TP_PCT"] < 15)]
+    df = df[(df["SL_PCT"] > 0.1) & (df["SL_PCT"] < 10)]
+
     features = [
         "RSI", "MACD", "Signal", "MA_5", "MA_20", "Volatility", "Momentum",
         "Price_Change", "Volume_Change", "CCI", "ADX", "KAMA", "OBV",
