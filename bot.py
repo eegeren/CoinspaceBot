@@ -225,6 +225,18 @@ def check_premium_status(user_id: int) -> bool:
         logger.error(f"❌ Premium check error for user {user_id}: {e}")
         return False
 
+async def notify_user_if_expired(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not check_premium_status(user_id):
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ Your Premium subscription has expired\\. Renew with /premium\\.",
+                parse_mode="MarkdownV2"
+            )
+            logger.info(f"🔔 Premium expiration notification sent to user: {user_id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to send notification to user {user_id}: {e}")
+
 # Coin symbol mapping
 symbol_to_id_map = {}
 
