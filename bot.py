@@ -282,8 +282,14 @@ async def generate_ai_comment(symbol: str) -> str:
     if not symbol:
         logger.error("❌ generate_ai_comment: symbol is None")
         return "⚠️ Invalid coin symbol: None provided."
+
     try:
-        klines = client.get_klines(symbol=f"{symbol.upper()}USDT", interval=BinanceClient.KLINE_INTERVAL_15MINUTE, limit=50)
+        klines = client.get_klines(
+            symbol=f"{symbol.upper()}USDT",
+            interval=BinanceClient.KLINE_INTERVAL_15MINUTE,
+            limit=50
+        )
+
         if len(klines) < 50:
             raise ValueError(f"Insufficient data for {symbol}: {len(klines)} rows")
 
@@ -294,6 +300,7 @@ async def generate_ai_comment(symbol: str) -> str:
         ])
         df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
 
+        # Teknik göstergeler
         df['rsi'] = RSIIndicator(close=df['close']).rsi()
         df['macd'] = MACD(close=df['close']).macd_diff()
         df['sma_20'] = SMAIndicator(close=df['close'], window=20).sma_indicator()
@@ -304,32 +311,65 @@ async def generate_ai_comment(symbol: str) -> str:
 
         if not model or not expected_features:
             raise ValueError("Model or feature list not loaded!")
-        
+
         model_input = pd.DataFrame([latest[expected_features]], columns=expected_features)
+
         prediction = model.predict(model_input)[0]
-        tp = tp_model.predict(model_input)[0] * current_price * 0.01 if tp_model else None
-        sl = sl_model.predict(model_input)[0] * current_price * 0.01 if sl_model else None
+        tp_pct = tp_model.predict(model_input)[0] if tp_model else None
+        sl_pct = sl_model.predict(model_input)[0] if sl_model else None
+        tp = tp_pct * current_price * 0.01 if tp_pct else None
+        sl = sl_pct * current_price * 0.01 if sl_pct else None
 
         rsi = latest['rsi']
         macd = latest['macd']
         sma_20 = latest['sma_20']
-        rsi_comment = "RSI in oversold territory." if rsi < 30 else ("RSI in overbought territory." if rsi > 70 else "RSI neutral.")
-        macd_comment = "MACD bullish." if macd > 0 else "MACD bearish."
+        price = latest['close']
+
+        # Yorumsal analizler
+        comment_lines = []
+        if rsi > 70:
+            comment_lines.append("⚠️ RSI is high (overbought).")
+        elif rsi < 30:
+            comment_lines.append("🔻 RSI is low (oversold).")
+        else:
+            comment_lines.append("🟡 RSI is in neutral zone.")
+
+        comment_lines.append("📈 MACD is bullish." if macd > 0 else "📉 MACD is bearish.")
+
+        if price > sma_20:
+            comment_lines.append("🟩 Price is above MA — bullish trend.")
+        else:
+            comment_lines.append("🟥 Price is below MA — potential weakness.")
+
+        # Risk değerlendirmesi
+        rr_ratio = round(abs(tp_pct / sl_pct), 2) if tp_pct and sl_pct else "N/A"
+        if isinstance(rr_ratio, float):
+            risk_level = "🔴 High Risk" if rr_ratio < 1 else ("🟡 Medium Risk" if rr_ratio < 2 else "🟢 Low Risk")
+        else:
+            risk_level = "❓ Unknown Risk"
+
         ai_signal = "📈 BUY" if prediction == 1 else "📉 SELL"
-        tp_text = f"🎯 TP: ${tp:.2f}" if tp else "❌ TP prediction failed."
-        sl_text = f"🛑 SL: ${sl:.2f}" if sl else "❌ SL prediction failed."
+        tp_text = f"🎯 TP: ${tp:.2f} (+{tp_pct:.2f}%)" if tp_pct else "❌ TP prediction failed."
+        sl_text = f"🛑 SL: ${sl:.2f} ({-sl_pct:.2f}%)" if sl_pct else "❌ SL prediction failed."
 
         _, change_24h, change_7d = await fetch_ohlc_data(symbol, days=7)
+
         return (
-            f"📊 {symbol.upper()} (${current_price:.2f})\n"
-            f"📈 24h: {change_24h:+.2f}% | 🗕 7d: {change_7d:+.2f}%\n\n"
-            f"💡 {ai_signal}\n"
-            f"📉 RSI: {rsi:.2f} | 🧺 MACD: {macd:.2f}\n"
-            f"🧠 AI Comment: {rsi_comment} {macd_comment}"
+            f"📊 *{symbol.upper()}* (${current_price:.2f})\n"
+            f"📈 24h: {change_24h:+.2f}% | 📅 7d: {change_7d:+.2f}%\n\n"
+            f"💡 Signal: {ai_signal}\n"
+            f"{tp_text}\n"
+            f"{sl_text}\n"
+            f"⚖️ Risk/Reward: {rr_ratio} | {risk_level}\n\n"
+            f"📊 Indicators:\n"
+            f"RSI: {rsi:.2f} | MACD: {macd:.4f} | MA(20): {sma_20:.2f}\n\n"
+            f"🧠 *AI Commentary:*\n" + "\n".join(comment_lines)
         )
+
     except Exception as e:
         logger.error(f"❌ AI comment error for {symbol}: {e}")
         return f"⚠️ Failed to generate AI comment for {symbol}: {e}"
+
 
 # Send an AI trading signal with feedback buttons
 async def send_ai_signal(update: Update, context: ContextTypes.DEFAULT_TYPE, signal_text: str):
@@ -896,7 +936,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = context.args[0].upper()
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\\.", parse_mode="MarkdownV2")
         return
     price = await fetch_price(symbol)
     if price is not None:
@@ -933,7 +973,7 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = context.args[0].upper()
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\.", parse_mode="MarkdownV2")
         return
     try:
         amount = float(context.args[1])
@@ -955,7 +995,7 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = context.args[0].upper()
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\.", parse_mode="MarkdownV2")
         return
     user_id = update.effective_user.id
     success = remove_coin(user_id, symbol)
@@ -971,7 +1011,7 @@ async def update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = context.args[0].upper()
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\.", parse_mode="MarkdownV2")
         return
     try:
         amount = float(context.args[1])
@@ -1059,7 +1099,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = context.args[0].upper()
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\.", parse_mode="MarkdownV2")
         return
     try:
         target_price = float(context.args[1])
@@ -1081,7 +1121,7 @@ async def ai_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper()
     user_id = update.effective_user.id
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\.", parse_mode="MarkdownV2")
         return
     if not check_premium_status(user_id):
         await update.effective_message.reply_text("❌ The /ai command is for Premium users only\\. Upgrade with /premium\\.", parse_mode="MarkdownV2")
@@ -1097,7 +1137,7 @@ async def backtest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = context.args[0].upper()
     if not symbol or symbol not in symbol_to_id_map:
-        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\.", parse_mode="MarkdownV2")
+        await update.effective_message.reply_text(f"❌ Invalid coin symbol: {symbol or 'None'}\\\\.", parse_mode="MarkdownV2")
         return
     user_id = update.effective_user.id
     if not check_premium_status(user_id):
